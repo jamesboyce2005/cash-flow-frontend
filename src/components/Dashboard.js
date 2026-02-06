@@ -5,6 +5,7 @@ import './Dashboard.css';
 
 function Dashboard({ user, token, onLogout, apiUrl }) {
   const [accounts, setAccounts] = useState([]);
+  const [loans, setLoans] = useState([]);
   const [summary, setSummary] = useState({
     totalBankBalance: '0.00',
     totalCreditBalance: '0.00',
@@ -26,7 +27,21 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     setError('');
     try {
       const response = await axios.get(`${apiUrl}/api/accounts`, axiosConfig);
-      setAccounts(response.data.accounts);
+      
+      // Separate loans from regular accounts
+      const regularAccounts = [];
+      const loanAccounts = [];
+      
+      response.data.accounts.forEach(account => {
+        if (account.type === 'loan') {
+          loanAccounts.push(account);
+        } else {
+          regularAccounts.push(account);
+        }
+      });
+      
+      setAccounts(regularAccounts);
+      setLoans(loanAccounts);
       setSummary(response.data.summary);
     } catch (err) {
       setError('Failed to fetch accounts');
@@ -180,6 +195,29 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
           </div>
         )}
       </div>
+
+      {loans.length > 0 && (
+        <div className="accounts-section loans-section">
+          <h2>Your Loans (Not included in Net Cash)</h2>
+          <div className="accounts-grid">
+            {loans.map((loan) => (
+              <div key={loan.id} className="account-card loan">
+                <div className="account-header">
+                  <h3>{loan.name}</h3>
+                  <span className="account-type">{loan.subtype || 'loan'}</span>
+                </div>
+                {loan.mask && (
+                  <p className="account-mask">••••{loan.mask}</p>
+                )}
+                <div className="balance">
+                  <span className="label">Current Balance:</span>
+                  <span className="value">{formatCurrency(loan.balance || loan.current)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,2 @@
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.plaid.com https://www.google.com https://www.gstatic.com; connect-src 'self' https://*.plaid.com https://*.plaid.io https://www.google.com https://www.gstatic.com wss://www.walletlink.org wss://mainnet.infura.io https://*.seondnsresolve.com; frame-src https://cdn.plaid.com https://www.google.com; style-src 'self' 'unsafe-inline';

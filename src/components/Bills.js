@@ -126,7 +126,13 @@ function Bills({ token, apiUrl }) {
         ) : bills.length === 0 ? (
           <p className="empty-message">No bills for this month. Click "Add Bill" to get started.</p>
         ) : (
-          bills.map((bill) => (
+          [...bills]
+            .sort((a, b) => {
+              // Unpaid first, then by due day
+              if (a.is_paid !== b.is_paid) return a.is_paid ? 1 : -1;
+              return (a.due_day || 99) - (b.due_day || 99);
+            })
+            .map((bill) => (
             <div key={bill.id} className={`bill-card ${bill.is_paid ? 'paid' : 'unpaid'}`}>
               <div className="bill-info">
                 <h4>{bill.name}</h4>

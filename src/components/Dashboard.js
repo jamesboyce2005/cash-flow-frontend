@@ -22,6 +22,7 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
   const [showTransactions, setShowTransactions] = useState(false);
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
+  const [draggedItem, setDraggedItem] = useState(null);
 
   const axiosConfig = {
     headers: {
@@ -49,7 +50,7 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     try {
       const response = await axios.get(`${apiUrl}/api/accounts`, axiosConfig);
       
-      // Separate loans from regular accounts and filter hidden
+      // Separate by type
       const regularAccounts = [];
       const loanAccounts = [];
       
@@ -65,7 +66,6 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
       setLoans(loanAccounts);
       setSummary(response.data.summary);
       
-      // Also fetch unpaid bills
       await fetchUnpaidBills();
     } catch (err) {
       setError('Failed to fetch accounts');
@@ -75,7 +75,6 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   }, [apiUrl, token]);
 
-  // Get link token for Plaid
   const getLinkToken = async () => {
     try {
       const response = await axios.post(
@@ -89,7 +88,6 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   };
 
-  // Handle successful Plaid link
   const onSuccess = useCallback(async (publicToken) => {
     try {
       await axios.post(
@@ -124,10 +122,17 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
 
   const toggleHideAccount = async (accountId) => {
     try {
+      // Optimistically update UI
+      setAccounts(prev => prev.map(acc => 
+        acc.id === accountId ? { ...acc, hidden: !acc.hidden } : acc
+      ));
+      
+      // Update backend
       await axios.patch(`${apiUrl}/api/accounts/${accountId}/toggle-hide`, {}, axiosConfig);
-      fetchAccounts();
     } catch (error) {
       console.error('Error hiding account:', error);
+      // Revert on error
+      fetchAccounts();
     }
   };
 
@@ -138,11 +143,18 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
 
   const saveRename = async (accountId) => {
     try {
-      await axios.patch(`${apiUrl}/api/accounts/${accountId}/rename`, { customName: newName }, axiosConfig);
+      // Optimistically update UI
+      setAccounts(prev => prev.map(acc => 
+        acc.id === accountId ? { ...acc, custom_name: newName } : acc
+      ));
       setRenamingAccount(null);
-      fetchAccounts();
+      
+      // Update backend
+      await axios.patch(`${apiUrl}/api/accounts/${accountId}/rename`, { customName: newName }, axiosConfig);
     } catch (error) {
       console.error('Error renaming account:', error);
+      // Revert on error
+      fetchAccounts();
     }
   };
 
@@ -169,6 +181,68 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     setTransactions([]);
   };
 
+  const handleDragStart = (e, account, accountType) => {
+    setDraggedItem({ account, accountType });
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = async (e, targetAccount, targetType) => {
+    e.preventDefault();
+    
+    if (!draggedItem || draggedItem.accountType !== targetType) {
+      setDraggedItem(null);
+      return;
+    }
+
+    const sourceAccount = draggedItem.account;
+    
+    // Get all accounts of this type
+    const accountsOfType = accounts.filter(a => 
+      (targetType === 'bank' && a.type === 'depository') ||
+      (targetType === 'credit' && a.type === 'credit')
+    ).sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+
+    const sourceIndex = accountsOfType.findIndex(a => a.id === sourceAccount.id);
+    const targetIndex = accountsOfType.findIndex(a => a.id === targetAccount.id);
+
+    if (sourceIndex === targetIndex) {
+      setDraggedItem(null);
+      return;
+    }
+
+    // Reorder
+    const reordered = [...accountsOfType];
+    const [removed] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, removed);
+
+    // Update display_order
+    const updates = reordered.map((acc, idx) => ({
+      accountId: acc.id,
+      order: idx
+    }));
+
+    // Optimistically update UI
+    setAccounts(prev => prev.map(acc => {
+      const update = updates.find(u => u.accountId === acc.id);
+      return update ? { ...acc, display_order: update.order } : acc;
+    }));
+
+    // Update backend
+    try {
+      await axios.patch(`${apiUrl}/api/accounts/reorder`, { accountOrders: updates }, axiosConfig);
+    } catch (error) {
+      console.error('Error reordering accounts:', error);
+      fetchAccounts();
+    }
+
+    setDraggedItem(null);
+  };
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -177,6 +251,84 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
   };
 
   const trueAvailableCash = parseFloat(summary.netAvailableCash) - unpaidBills;
+
+  // Separate and sort accounts
+  const bankAccounts = accounts
+    .filter(a => a.type === 'depository' && !a.hidden)
+    .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+  
+  const creditAccounts = accounts
+    .filter(a => a.type === 'credit' && !a.hidden)
+    .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+
+  const renderAccount = (account, accountType) => (
+    <div
+      key={account.id}
+      className={`account-card ${account.type}`}
+      draggable
+      onDragStart={(e) => handleDragStart(e, account, accountType)}
+      onDragOver={handleDragOver}
+      onDrop={(e) => handleDrop(e, account, accountType)}
+    >
+      <div className="drag-handle">⋮⋮</div>
+      <div className="account-header">
+        {renamingAccount === account.id ? (
+          <div className="rename-input">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              autoFocus
+            />
+            <button onClick={() => saveRename(account.id)} className="save-btn">✓</button>
+            <button onClick={cancelRename} className="cancel-btn">✕</button>
+          </div>
+        ) : (
+          <>
+            <h3>{account.custom_name || account.name}</h3>
+            <span className="account-type">{account.subtype}</span>
+          </>
+        )}
+      </div>
+      {account.mask && (
+        <p className="account-mask">••••{account.mask}</p>
+      )}
+      {account.type === 'credit' ? (
+        <>
+          <div className="balance">
+            <span className="label">Balance Owed:</span>
+            <span className="value">{formatCurrency(account.creditBalance)}</span>
+          </div>
+          <div className="balance secondary">
+            <span className="label">Available Credit:</span>
+            <span className="value">{formatCurrency(account.availableCredit)}</span>
+          </div>
+          {account.limit && (
+            <div className="balance secondary">
+              <span className="label">Credit Limit:</span>
+              <span className="value">{formatCurrency(account.limit)}</span>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="balance">
+          <span className="label">Available:</span>
+          <span className="value">{formatCurrency(account.balance)}</span>
+        </div>
+      )}
+      <div className="account-actions">
+        <button onClick={() => viewTransactions(account)} className="action-btn">
+          📋
+        </button>
+        <button onClick={() => startRename(account)} className="action-btn">
+          ✏️
+        </button>
+        <button onClick={() => toggleHideAccount(account.id)} className="action-btn">
+          👁️
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="dashboard">
@@ -250,91 +402,44 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
           {error && <div className="error-message">{error}</div>}
 
           <div className="accounts-section">
-            <h2>Your Accounts</h2>
-            {accounts.filter(a => !a.hidden).length === 0 ? (
+            <h2>Bank Accounts</h2>
+            {bankAccounts.length === 0 ? (
               <div className="empty-state">
-                <p>No accounts visible.</p>
-                <p>Click "Add Bank Account" to get started!</p>
+                <p>No bank accounts connected.</p>
               </div>
             ) : (
               <div className="accounts-grid">
-                {accounts.filter(a => !a.hidden).map((account) => (
-                  <div key={account.id} className={`account-card ${account.type}`}>
-                    <div className="account-header">
-                      {renamingAccount === account.id ? (
-                        <div className="rename-input">
-                          <input
-                            type="text"
-                            value={newName}
-                            onChange={(e) => setNewName(e.target.value)}
-                            autoFocus
-                          />
-                          <button onClick={() => saveRename(account.id)} className="save-btn">✓</button>
-                          <button onClick={cancelRename} className="cancel-btn">✕</button>
-                        </div>
-                      ) : (
-                        <>
-                          <h3>{account.custom_name || account.name}</h3>
-                          <span className="account-type">{account.subtype}</span>
-                        </>
-                      )}
-                    </div>
-                    {account.mask && (
-                      <p className="account-mask">••••{account.mask}</p>
-                    )}
-                    {account.type === 'credit' ? (
-                      <>
-                        <div className="balance">
-                          <span className="label">Balance Owed:</span>
-                          <span className="value">{formatCurrency(account.creditBalance)}</span>
-                        </div>
-                        <div className="balance secondary">
-                          <span className="label">Available Credit:</span>
-                          <span className="value">{formatCurrency(account.availableCredit)}</span>
-                        </div>
-                        {account.limit && (
-                          <div className="balance secondary">
-                            <span className="label">Credit Limit:</span>
-                            <span className="value">{formatCurrency(account.limit)}</span>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="balance">
-                        <span className="label">Available:</span>
-                        <span className="value">{formatCurrency(account.balance)}</span>
-                      </div>
-                    )}
-                    <div className="account-actions">
-                      <button onClick={() => viewTransactions(account)} className="action-btn">
-                        📋 Transactions
-                      </button>
-                      <button onClick={() => startRename(account)} className="action-btn">
-                        ✏️ Rename
-                      </button>
-                      <button onClick={() => toggleHideAccount(account.id)} className="action-btn">
-                        👁️ Hide
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {accounts.filter(a => a.hidden).length > 0 && (
-              <div className="hidden-accounts">
-                <h3>Hidden Accounts</h3>
-                {accounts.filter(a => a.hidden).map((account) => (
-                  <div key={account.id} className="hidden-account-item">
-                    <span>{account.custom_name || account.name}</span>
-                    <button onClick={() => toggleHideAccount(account.id)} className="unhide-btn">
-                      Show
-                    </button>
-                  </div>
-                ))}
+                {bankAccounts.map(account => renderAccount(account, 'bank'))}
               </div>
             )}
           </div>
+
+          <div className="accounts-section">
+            <h2>Credit Cards</h2>
+            {creditAccounts.length === 0 ? (
+              <div className="empty-state">
+                <p>No credit cards connected.</p>
+              </div>
+            ) : (
+              <div className="accounts-grid">
+                {creditAccounts.map(account => renderAccount(account, 'credit'))}
+              </div>
+            )}
+          </div>
+
+          {accounts.filter(a => a.hidden).length > 0 && (
+            <div className="hidden-accounts">
+              <h3>Hidden Accounts</h3>
+              {accounts.filter(a => a.hidden).map((account) => (
+                <div key={account.id} className="hidden-account-item">
+                  <span>{account.custom_name || account.name}</span>
+                  <button onClick={() => toggleHideAccount(account.id)} className="unhide-btn">
+                    Show
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
 

@@ -43,6 +43,33 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   };
 
+  // Fetch cached accounts (fast, no Plaid call)
+  const fetchCachedAccounts = useCallback(async () => {
+    try {
+      const response = await axios.get(`${apiUrl}/api/accounts/cached`, axiosConfig);
+      
+      // Separate by type
+      const regularAccounts = [];
+      const loanAccounts = [];
+      
+      response.data.accounts.forEach(account => {
+        if (account.type === 'loan') {
+          loanAccounts.push(account);
+        } else {
+          regularAccounts.push(account);
+        }
+      });
+      
+      setAccounts(regularAccounts);
+      setLoans(loanAccounts);
+      setSummary(response.data.summary);
+      
+      await fetchUnpaidBills();
+    } catch (err) {
+      console.error('Error fetching cached accounts:', err);
+    }
+  }, [apiUrl, token]);
+  
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
     setLoading(true);

@@ -134,10 +134,10 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     onSuccess,
   });
 
-  useEffect(() => {
-    fetchAccounts();
+useEffect(() => {
+    fetchCachedAccounts(); // Load cached first (instant)
     getLinkToken();
-  }, [fetchAccounts]);
+  }, [fetchCachedAccounts]);
 
   const handleAddAccount = () => {
     if (ready) {

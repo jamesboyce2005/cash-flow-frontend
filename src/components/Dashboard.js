@@ -23,6 +23,7 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
   const [draggedItem, setDraggedItem] = useState(null);
+  const [itemErrors, setItemErrors] = useState({});
 
   const axiosConfig = {
     headers: {
@@ -123,6 +124,44 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   };
   
+  // Handle update login for item
+  const handleUpdateLogin = async (account) => {
+    try {
+      // Get the item_id from the account
+      const itemId = account.item_id || accounts.find(a => a.id === account.id)?.item_id;
+      
+      if (!itemId) {
+        alert('Could not find item to update');
+        return;
+      }
+      
+      // Get update link token
+      const response = await axios.post(
+        `${apiUrl}/api/plaid/create-update-token/${itemId}`,
+        {},
+        axiosConfig
+      );
+      
+      // Open Plaid Link in update mode
+      const plaidHandler = window.Plaid.create({
+        token: response.data.link_token,
+        onSuccess: () => {
+          alert('Account updated successfully! Click Refresh to see updated data.');
+          fetchAccounts();
+        },
+        onExit: (err) => {
+          if (err) {
+            console.error('Update error:', err);
+          }
+        }
+      });
+      
+      plaidHandler.open();
+    } catch (error) {
+      console.error('Error updating login:', error);
+      alert('Failed to update login. Please try again.');
+    }
+  };
   const getLinkToken = async () => {
     try {
       const response = await axios.post(
@@ -372,6 +411,9 @@ useEffect(() => {
       <div className="account-actions">
         <button onClick={() => refreshSingleAccount(account.id)} className="action-btn" title="Refresh">
           🔄
+        </button>
+        <button onClick={() => handleUpdateLogin(account)} className="action-btn" title="Update Login">
+          🔑
         </button>
         <button onClick={() => viewTransactions(account)} className="action-btn" title="Transactions">
           📋

@@ -102,6 +102,27 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   }, [apiUrl, token]);
 
+// Refresh single account
+  const refreshSingleAccount = async (accountId) => {
+    try {
+      const response = await axios.get(`${apiUrl}/api/accounts/${accountId}/refresh`, axiosConfig);
+      
+      // Update just this account in state
+      setAccounts(prev => prev.map(acc => 
+        acc.id === accountId ? response.data.account : acc
+      ));
+      
+      setLoans(prev => prev.map(loan => 
+        loan.id === accountId ? response.data.account : loan
+      ));
+      
+      // Recalculate summary
+      await fetchCachedAccounts();
+    } catch (error) {
+      console.error('Error refreshing account:', error);
+    }
+  };
+  
   const getLinkToken = async () => {
     try {
       const response = await axios.post(
@@ -343,14 +364,22 @@ useEffect(() => {
           <span className="value">{formatCurrency(account.balance)}</span>
         </div>
       )}
+     {account.last_updated && (
+        <p className="last-updated">
+          Updated: {new Date(account.last_updated).toLocaleString()}
+        </p>
+      )}
       <div className="account-actions">
-        <button onClick={() => viewTransactions(account)} className="action-btn">
+        <button onClick={() => refreshSingleAccount(account.id)} className="action-btn" title="Refresh">
+          🔄
+        </button>
+        <button onClick={() => viewTransactions(account)} className="action-btn" title="Transactions">
           📋
         </button>
-        <button onClick={() => startRename(account)} className="action-btn">
+        <button onClick={() => startRename(account)} className="action-btn" title="Rename">
           ✏️
         </button>
-        <button onClick={() => toggleHideAccount(account.id)} className="action-btn">
+        <button onClick={() => toggleHideAccount(account.id)} className="action-btn" title="Hide">
           👁️
         </button>
       </div>

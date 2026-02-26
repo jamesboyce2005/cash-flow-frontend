@@ -27,9 +27,17 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     credit_limit: ''
   });
   
-  // Edit balance
+  // Edit balance (for bank accounts)
   const [editingBalance, setEditingBalance] = useState(null);
   const [editBalance, setEditBalance] = useState('');
+  
+  // Edit credit limit (for credit cards)
+  const [editingCreditLimit, setEditingCreditLimit] = useState(null);
+  const [editCreditLimit, setEditCreditLimit] = useState('');
+  
+  // Edit available credit (for credit cards)
+  const [editingAvailableCredit, setEditingAvailableCredit] = useState(null);
+  const [editAvailableCredit, setEditAvailableCredit] = useState('');
 
   const axiosConfig = {
     headers: {
@@ -100,7 +108,7 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   };
 
-  // Update balance
+  // Update balance (bank accounts only)
   const startEditBalance = (account) => {
     setEditingBalance(account.id);
     setEditBalance(account.balance.toString());
@@ -127,6 +135,63 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     setEditBalance('');
   };
 
+  // Update credit limit (credit cards only)
+  const startEditCreditLimit = (account) => {
+    setEditingCreditLimit(account.id);
+    setEditCreditLimit(account.limit.toString());
+  };
+
+  const saveCreditLimit = async (accountId) => {
+    try {
+      await axios.patch(
+        `${apiUrl}/api/accounts/${accountId}/credit-limit`,
+        { credit_limit: parseFloat(editCreditLimit) },
+        axiosConfig
+      );
+      
+      setEditingCreditLimit(null);
+      fetchAccounts();
+    } catch (error) {
+      console.error('Error updating credit limit:', error);
+      alert('Failed to update credit limit');
+    }
+  };
+
+  const cancelEditCreditLimit = () => {
+    setEditingCreditLimit(null);
+    setEditCreditLimit('');
+  };
+
+  // Update available credit (credit cards only)
+  const startEditAvailableCredit = (account) => {
+    setEditingAvailableCredit(account.id);
+    setEditAvailableCredit(account.availableCredit.toString());
+  };
+
+  const saveAvailableCredit = async (accountId, currentLimit) => {
+    try {
+      // Calculate new balance: balance = limit - available
+      const newBalance = currentLimit - parseFloat(editAvailableCredit);
+      
+      await axios.patch(
+        `${apiUrl}/api/accounts/${accountId}/balance`,
+        { balance: newBalance },
+        axiosConfig
+      );
+      
+      setEditingAvailableCredit(null);
+      fetchAccounts();
+    } catch (error) {
+      console.error('Error updating available credit:', error);
+      alert('Failed to update available credit');
+    }
+  };
+
+  const cancelEditAvailableCredit = () => {
+    setEditingAvailableCredit(null);
+    setEditAvailableCredit('');
+  };
+
   // Delete account
   const deleteAccount = async (accountId, accountName) => {
     if (!window.confirm(`Are you sure you want to delete "${accountName}"?`)) {
@@ -139,22 +204,6 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     } catch (error) {
       console.error('Error deleting account:', error);
       alert('Failed to delete account');
-    }
-  };
-
-  const toggleHideAccount = async (accountId) => {
-    try {
-      // Optimistically update UI
-      setAccounts(prev => prev.map(acc => 
-        acc.id === accountId ? { ...acc, hidden: !acc.hidden } : acc
-      ));
-      
-      // Update backend
-      await axios.patch(`${apiUrl}/api/accounts/${accountId}/toggle-hide`, {}, axiosConfig);
-    } catch (error) {
-      console.error('Error hiding account:', error);
-      // Revert on error
-      fetchAccounts();
     }
   };
 
@@ -256,13 +305,13 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
 
   const trueAvailableCash = parseFloat(summary.netAvailableCash) - unpaidBills;
 
-  // Separate and sort accounts
+  // Separate and sort accounts (no hidden filter)
   const bankAccounts = accounts
-    .filter(a => a.type === 'depository' && !a.hidden)
+    .filter(a => a.type === 'depository')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
   
   const creditAccounts = accounts
-    .filter(a => a.type === 'credit' && !a.hidden)
+    .filter(a => a.type === 'credit')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
 
   const isBalanceStale = (lastUpdated) => {
@@ -300,38 +349,57 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
       
       {account.type === 'credit' ? (
         <>
-          {editingBalance === account.id ? (
+          {/* Balance Owed - NOT editable */}
+          <div className="balance">
+            <span className="label">Balance Owed:</span>
+            <span className="value">{formatCurrency(account.creditBalance)}</span>
+          </div>
+          
+          {/* Available Credit - EDITABLE */}
+          {editingAvailableCredit === account.id ? (
             <div className="edit-balance">
-              <label>Balance Owed:</label>
+              <label>Available Credit:</label>
               <input
                 type="number"
                 step="0.01"
-                value={editBalance}
-                onChange={(e) => setEditBalance(e.target.value)}
+                value={editAvailableCredit}
+                onChange={(e) => setEditAvailableCredit(e.target.value)}
                 autoFocus
               />
-              <button onClick={() => saveBalance(account.id)} className="save-btn">✓</button>
-              <button onClick={cancelEditBalance} className="cancel-btn">✕</button>
+              <button onClick={() => saveAvailableCredit(account.id, account.limit)} className="save-btn">✓</button>
+              <button onClick={cancelEditAvailableCredit} className="cancel-btn">✕</button>
             </div>
           ) : (
-            <div className="balance" onClick={() => startEditBalance(account)}>
-              <span className="label">Balance Owed:</span>
-              <span className="value clickable">{formatCurrency(account.creditBalance)}</span>
+            <div className="balance secondary" onClick={() => startEditAvailableCredit(account)}>
+              <span className="label">Available Credit:</span>
+              <span className="value clickable">{formatCurrency(account.availableCredit)}</span>
             </div>
           )}
-          <div className="balance secondary">
-            <span className="label">Available Credit:</span>
-            <span className="value">{formatCurrency(account.availableCredit)}</span>
-          </div>
-          {account.limit && (
-            <div className="balance secondary">
+          
+          {/* Credit Limit - EDITABLE */}
+          {editingCreditLimit === account.id ? (
+            <div className="edit-balance">
+              <label>Credit Limit:</label>
+              <input
+                type="number"
+                step="0.01"
+                value={editCreditLimit}
+                onChange={(e) => setEditCreditLimit(e.target.value)}
+                autoFocus
+              />
+              <button onClick={() => saveCreditLimit(account.id)} className="save-btn">✓</button>
+              <button onClick={cancelEditCreditLimit} className="cancel-btn">✕</button>
+            </div>
+          ) : (
+            <div className="balance secondary" onClick={() => startEditCreditLimit(account)}>
               <span className="label">Credit Limit:</span>
-              <span className="value">{formatCurrency(account.limit)}</span>
+              <span className="value clickable">{formatCurrency(account.limit)}</span>
             </div>
           )}
         </>
       ) : (
         <>
+          {/* Bank Account Balance - EDITABLE */}
           {editingBalance === account.id ? (
             <div className="edit-balance">
               <label>Available:</label>
@@ -363,13 +431,10 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
       
       <div className="account-actions">
         <button onClick={() => startRename(account)} className="action-btn" title="Rename">
-          ✏️
-        </button>
-        <button onClick={() => toggleHideAccount(account.id)} className="action-btn" title="Hide">
-          👁️
+          ✏️ Rename
         </button>
         <button onClick={() => deleteAccount(account.id, account.custom_name || account.name)} className="action-btn delete" title="Delete">
-          🗑️
+          🗑️ Delete
         </button>
       </div>
     </div>
@@ -520,20 +585,6 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
               </div>
             )}
           </div>
-
-          {accounts.filter(a => a.hidden).length > 0 && (
-            <div className="hidden-accounts">
-              <h3>Hidden Accounts</h3>
-              {accounts.filter(a => a.hidden).map((account) => (
-                <div key={account.id} className="hidden-account-item">
-                  <span>{account.custom_name || account.name}</span>
-                  <button onClick={() => toggleHideAccount(account.id)} className="unhide-btn">
-                    Show
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
         </>
       )}
 

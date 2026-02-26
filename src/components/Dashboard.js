@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { usePlaidLink } from 'react-plaid-link';
 import axios from 'axios';
 import Bills from './Bills';
 import './Dashboard.css';
@@ -7,23 +6,30 @@ import './Dashboard.css';
 function Dashboard({ user, token, onLogout, apiUrl }) {
   const [activeTab, setActiveTab] = useState('accounts');
   const [accounts, setAccounts] = useState([]);
-  const [loans, setLoans] = useState([]);
   const [summary, setSummary] = useState({
     totalBankBalance: '0.00',
     totalCreditBalance: '0.00',
     netAvailableCash: '0.00',
   });
   const [unpaidBills, setUnpaidBills] = useState(0);
-  const [linkToken, setLinkToken] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [selectedAccount, setSelectedAccount] = useState(null);
-  const [transactions, setTransactions] = useState([]);
-  const [showTransactions, setShowTransactions] = useState(false);
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
   const [draggedItem, setDraggedItem] = useState(null);
-  const [itemErrors, setItemErrors] = useState({});
+  
+  // New account form
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newAccount, setNewAccount] = useState({
+    name: '',
+    type: 'depository',
+    balance: '',
+    credit_limit: ''
+  });
+  
+  // Edit balance
+  const [editingBalance, setEditingBalance] = useState(null);
+  const [editBalance, setEditBalance] = useState('');
 
   const axiosConfig = {
     headers: {
@@ -44,56 +50,14 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   };
 
-  // Fetch cached accounts (fast, no Plaid call)
-  const fetchCachedAccounts = useCallback(async () => {
-    try {
-      const response = await axios.get(`${apiUrl}/api/accounts/cached`, axiosConfig);
-      
-      // Separate by type
-      const regularAccounts = [];
-      const loanAccounts = [];
-      
-      response.data.accounts.forEach(account => {
-        if (account.type === 'loan') {
-          loanAccounts.push(account);
-        } else {
-          regularAccounts.push(account);
-        }
-      });
-      
-      setAccounts(regularAccounts);
-      setLoans(loanAccounts);
-      setSummary(response.data.summary);
-      
-      await fetchUnpaidBills();
-    } catch (err) {
-      console.error('Error fetching cached accounts:', err);
-    }
-  }, [apiUrl, token]);
-  
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const response = await axios.get(`${apiUrl}/api/accounts`, axiosConfig);
-      
-      // Separate by type
-      const regularAccounts = [];
-      const loanAccounts = [];
-      
-      response.data.accounts.forEach(account => {
-        if (account.type === 'loan') {
-          loanAccounts.push(account);
-        } else {
-          regularAccounts.push(account);
-        }
-      });
-      
-      setAccounts(regularAccounts);
-      setLoans(loanAccounts);
+      setAccounts(response.data.accounts);
       setSummary(response.data.summary);
-      
       await fetchUnpaidBills();
     } catch (err) {
       setError('Failed to fetch accounts');
@@ -103,107 +67,78 @@ function Dashboard({ user, token, onLogout, apiUrl }) {
     }
   }, [apiUrl, token]);
 
-// Refresh single account
-  const refreshSingleAccount = async (accountId) => {
-    try {
-      const response = await axios.get(`${apiUrl}/api/accounts/${accountId}/refresh`, axiosConfig);
-      
-      // Update just this account in state
-      setAccounts(prev => prev.map(acc => 
-        acc.id === accountId ? response.data.account : acc
-      ));
-      
-      setLoans(prev => prev.map(loan => 
-        loan.id === accountId ? response.data.account : loan
-      ));
-      
-      // Recalculate summary
-      await fetchCachedAccounts();
-    } catch (error) {
-      console.error('Error refreshing account:', error);
-    }
-  };
-  
-  // Handle update login for item
-  const handleUpdateLogin = async (account) => {
-    try {
-      // Get the item_id from the account
-      const itemId = account.item_id || accounts.find(a => a.id === account.id)?.item_id;
-      
-      if (!itemId) {
-        alert('Could not find item to update');
-        return;
-      }
-      
-      // Get update link token
-      const response = await axios.post(
-        `${apiUrl}/api/plaid/create-update-token/${itemId}`,
-        {},
-        axiosConfig
-      );
-      
-      // Open Plaid Link in update mode
-      const plaidHandler = window.Plaid.create({
-        token: response.data.link_token,
-        onSuccess: () => {
-          alert('Account updated successfully! Click Refresh to see updated data.');
-          fetchAccounts();
-        },
-        onExit: (err) => {
-          if (err) {
-            console.error('Update error:', err);
-          }
-        }
-      });
-      
-      plaidHandler.open();
-    } catch (error) {
-      console.error('Error updating login:', error);
-      alert('Failed to update login. Please try again.');
-    }
-  };
-  const getLinkToken = async () => {
-    try {
-      const response = await axios.post(
-        `${apiUrl}/api/plaid/create-link-token`,
-        {},
-        axiosConfig
-      );
-      setLinkToken(response.data.link_token);
-    } catch (err) {
-      console.error('Error getting link token:', err);
-    }
-  };
+  useEffect(() => {
+    fetchAccounts();
+  }, [fetchAccounts]);
 
-  const onSuccess = useCallback(async (publicToken) => {
+  // Create new account
+  const handleCreateAccount = async (e) => {
+    e.preventDefault();
+    
+    if (!newAccount.name || !newAccount.balance) {
+      alert('Please fill in account name and balance');
+      return;
+    }
+    
     try {
-      await axios.post(
-        `${apiUrl}/api/plaid/exchange-public-token`,
-        { public_token: publicToken },
-        axiosConfig
-      );
+      await axios.post(`${apiUrl}/api/accounts`, {
+        name: newAccount.name,
+        type: newAccount.type,
+        balance: parseFloat(newAccount.balance),
+        credit_limit: newAccount.type === 'credit' ? parseFloat(newAccount.credit_limit || 0) : null
+      }, axiosConfig);
+      
+      // Reset form
+      setNewAccount({ name: '', type: 'depository', balance: '', credit_limit: '' });
+      setShowAddForm(false);
+      
+      // Refresh accounts
       fetchAccounts();
-    } catch (err) {
-      setError('Failed to link account');
-      console.error(err);
+    } catch (error) {
+      console.error('Error creating account:', error);
+      alert('Failed to create account');
     }
-  }, [apiUrl, token, fetchAccounts]);
+  };
 
-  const { open, ready } = usePlaidLink({
-    token: linkToken,
-    onSuccess,
-  });
+  // Update balance
+  const startEditBalance = (account) => {
+    setEditingBalance(account.id);
+    setEditBalance(account.balance.toString());
+  };
 
-useEffect(() => {
-    fetchCachedAccounts(); // Load cached first (instant)
-    getLinkToken();
-  }, [fetchCachedAccounts]);
+  const saveBalance = async (accountId) => {
+    try {
+      await axios.patch(
+        `${apiUrl}/api/accounts/${accountId}/balance`,
+        { balance: parseFloat(editBalance) },
+        axiosConfig
+      );
+      
+      setEditingBalance(null);
+      fetchAccounts();
+    } catch (error) {
+      console.error('Error updating balance:', error);
+      alert('Failed to update balance');
+    }
+  };
 
-  const handleAddAccount = () => {
-    if (ready) {
-      open();
-    } else {
-      getLinkToken();
+  const cancelEditBalance = () => {
+    setEditingBalance(null);
+    setEditBalance('');
+  };
+
+  // Delete account
+  const deleteAccount = async (accountId, accountName) => {
+    if (!window.confirm(`Are you sure you want to delete "${accountName}"?`)) {
+      return;
+    }
+    
+    try {
+      await axios.delete(`${apiUrl}/api/accounts/${accountId}`, axiosConfig);
+      fetchAccounts();
+    } catch (error) {
+      console.error('Error deleting account:', error);
+      alert('Failed to delete account');
     }
   };
 
@@ -248,24 +183,6 @@ useEffect(() => {
   const cancelRename = () => {
     setRenamingAccount(null);
     setNewName('');
-  };
-
-  const viewTransactions = async (account) => {
-    setSelectedAccount(account);
-    setShowTransactions(true);
-    try {
-      const response = await axios.get(`${apiUrl}/api/accounts/${account.id}/transactions`, axiosConfig);
-      setTransactions(response.data.transactions);
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
-      setTransactions([]);
-    }
-  };
-
-  const closeTransactions = () => {
-    setShowTransactions(false);
-    setSelectedAccount(null);
-    setTransactions([]);
   };
 
   const handleDragStart = (e, account, accountType) => {
@@ -348,10 +265,16 @@ useEffect(() => {
     .filter(a => a.type === 'credit' && !a.hidden)
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
 
+  const isBalanceStale = (lastUpdated) => {
+    if (!lastUpdated) return false;
+    const daysSince = (Date.now() - new Date(lastUpdated)) / (1000 * 60 * 60 * 24);
+    return daysSince >= 7;
+  };
+
   const renderAccount = (account, accountType) => (
     <div
       key={account.id}
-      className={`account-card ${account.type}`}
+      className={`account-card ${account.type} ${isBalanceStale(account.last_updated) ? 'stale' : ''}`}
       draggable
       onDragStart={(e) => handleDragStart(e, account, accountType)}
       onDragOver={handleDragOver}
@@ -371,21 +294,31 @@ useEffect(() => {
             <button onClick={cancelRename} className="cancel-btn">✕</button>
           </div>
         ) : (
-          <>
-            <h3>{account.custom_name || account.name}</h3>
-            <span className="account-type">{account.subtype}</span>
-          </>
+          <h3>{account.custom_name || account.name}</h3>
         )}
       </div>
-      {account.mask && (
-        <p className="account-mask">••••{account.mask}</p>
-      )}
+      
       {account.type === 'credit' ? (
         <>
-          <div className="balance">
-            <span className="label">Balance Owed:</span>
-            <span className="value">{formatCurrency(account.creditBalance)}</span>
-          </div>
+          {editingBalance === account.id ? (
+            <div className="edit-balance">
+              <label>Balance Owed:</label>
+              <input
+                type="number"
+                step="0.01"
+                value={editBalance}
+                onChange={(e) => setEditBalance(e.target.value)}
+                autoFocus
+              />
+              <button onClick={() => saveBalance(account.id)} className="save-btn">✓</button>
+              <button onClick={cancelEditBalance} className="cancel-btn">✕</button>
+            </div>
+          ) : (
+            <div className="balance" onClick={() => startEditBalance(account)}>
+              <span className="label">Balance Owed:</span>
+              <span className="value clickable">{formatCurrency(account.creditBalance)}</span>
+            </div>
+          )}
           <div className="balance secondary">
             <span className="label">Available Credit:</span>
             <span className="value">{formatCurrency(account.availableCredit)}</span>
@@ -398,31 +331,45 @@ useEffect(() => {
           )}
         </>
       ) : (
-        <div className="balance">
-          <span className="label">Available:</span>
-          <span className="value">{formatCurrency(account.balance)}</span>
-        </div>
+        <>
+          {editingBalance === account.id ? (
+            <div className="edit-balance">
+              <label>Available:</label>
+              <input
+                type="number"
+                step="0.01"
+                value={editBalance}
+                onChange={(e) => setEditBalance(e.target.value)}
+                autoFocus
+              />
+              <button onClick={() => saveBalance(account.id)} className="save-btn">✓</button>
+              <button onClick={cancelEditBalance} className="cancel-btn">✕</button>
+            </div>
+          ) : (
+            <div className="balance" onClick={() => startEditBalance(account)}>
+              <span className="label">Available:</span>
+              <span className="value clickable">{formatCurrency(account.balance)}</span>
+            </div>
+          )}
+        </>
       )}
-     {account.last_updated && (
-        <p className="last-updated">
-          Updated: {new Date(account.last_updated).toLocaleString()}
+      
+      {account.last_updated && (
+        <p className={`last-updated ${isBalanceStale(account.last_updated) ? 'stale' : ''}`}>
+          Updated: {new Date(account.last_updated).toLocaleDateString()}
+          {isBalanceStale(account.last_updated) && ' ⚠️'}
         </p>
       )}
+      
       <div className="account-actions">
-        <button onClick={() => refreshSingleAccount(account.id)} className="action-btn" title="Refresh">
-          🔄
-        </button>
-        <button onClick={() => handleUpdateLogin(account)} className="action-btn" title="Update Login">
-          🔑
-        </button>
-        <button onClick={() => viewTransactions(account)} className="action-btn" title="Transactions">
-          📋
-        </button>
         <button onClick={() => startRename(account)} className="action-btn" title="Rename">
           ✏️
         </button>
         <button onClick={() => toggleHideAccount(account.id)} className="action-btn" title="Hide">
           👁️
+        </button>
+        <button onClick={() => deleteAccount(account.id, account.custom_name || account.name)} className="action-btn delete" title="Delete">
+          🗑️
         </button>
       </div>
     </div>
@@ -452,12 +399,6 @@ useEffect(() => {
           onClick={() => setActiveTab('bills')}
         >
           Bills
-        </button>
-        <button 
-          className={`tab ${activeTab === 'loans' ? 'active' : ''}`}
-          onClick={() => setActiveTab('loans')}
-        >
-          Loans
         </button>
       </div>
 
@@ -489,13 +430,68 @@ useEffect(() => {
           </div>
 
           <div className="actions">
-            <button onClick={handleAddAccount} className="add-account-btn" disabled={!ready}>
-              + Add Bank Account
-            </button>
-            <button onClick={fetchAccounts} className="refresh-btn" disabled={loading}>
-              {loading ? 'Refreshing...' : '🔄 Refresh Balances'}
+            <button onClick={() => setShowAddForm(!showAddForm)} className="add-account-btn">
+              {showAddForm ? '✕ Cancel' : '+ Add Account'}
             </button>
           </div>
+
+          {showAddForm && (
+            <div className="add-account-form">
+              <h3>Add New Account</h3>
+              <form onSubmit={handleCreateAccount}>
+                <div className="form-group">
+                  <label>Account Name:</label>
+                  <input
+                    type="text"
+                    value={newAccount.name}
+                    onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })}
+                    placeholder="e.g., Chase Checking"
+                    required
+                  />
+                </div>
+                
+                <div className="form-group">
+                  <label>Account Type:</label>
+                  <select
+                    value={newAccount.type}
+                    onChange={(e) => setNewAccount({ ...newAccount, type: e.target.value })}
+                  >
+                    <option value="depository">Bank Account (Checking/Savings)</option>
+                    <option value="credit">Credit Card</option>
+                  </select>
+                </div>
+                
+                <div className="form-group">
+                  <label>
+                    {newAccount.type === 'credit' ? 'Current Balance Owed:' : 'Current Balance:'}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newAccount.balance}
+                    onChange={(e) => setNewAccount({ ...newAccount, balance: e.target.value })}
+                    placeholder="0.00"
+                    required
+                  />
+                </div>
+                
+                {newAccount.type === 'credit' && (
+                  <div className="form-group">
+                    <label>Credit Limit:</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={newAccount.credit_limit}
+                      onChange={(e) => setNewAccount({ ...newAccount, credit_limit: e.target.value })}
+                      placeholder="0.00"
+                    />
+                  </div>
+                )}
+                
+                <button type="submit" className="submit-btn">Create Account</button>
+              </form>
+            </div>
+          )}
 
           {error && <div className="error-message">{error}</div>}
 
@@ -503,7 +499,7 @@ useEffect(() => {
             <h2>Bank Accounts</h2>
             {bankAccounts.length === 0 ? (
               <div className="empty-state">
-                <p>No bank accounts connected.</p>
+                <p>No bank accounts added. Click "+ Add Account" to get started.</p>
               </div>
             ) : (
               <div className="accounts-grid">
@@ -516,7 +512,7 @@ useEffect(() => {
             <h2>Credit Cards</h2>
             {creditAccounts.length === 0 ? (
               <div className="empty-state">
-                <p>No credit cards connected.</p>
+                <p>No credit cards added.</p>
               </div>
             ) : (
               <div className="accounts-grid">
@@ -543,61 +539,6 @@ useEffect(() => {
 
       {activeTab === 'bills' && (
         <Bills token={token} apiUrl={apiUrl} />
-      )}
-
-      {activeTab === 'loans' && (
-        <div className="accounts-section loans-section">
-          <h2>Your Loans</h2>
-          {loans.length === 0 ? (
-            <p className="empty-state">No loans connected.</p>
-          ) : (
-            <div className="accounts-grid">
-              {loans.map((loan) => (
-                <div key={loan.id} className="account-card loan">
-                  <div className="account-header">
-                    <h3>{loan.custom_name || loan.name}</h3>
-                    <span className="account-type">{loan.subtype || 'loan'}</span>
-                  </div>
-                  {loan.mask && (
-                    <p className="account-mask">••••{loan.mask}</p>
-                  )}
-                  <div className="balance">
-                    <span className="label">Current Balance:</span>
-                    <span className="value">{formatCurrency(loan.balance || loan.current)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {showTransactions && (
-        <div className="modal-overlay" onClick={closeTransactions}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Transactions: {selectedAccount?.custom_name || selectedAccount?.name}</h2>
-              <button onClick={closeTransactions} className="close-btn">✕</button>
-            </div>
-            <div className="transactions-list">
-              {transactions.length === 0 ? (
-                <p>No recent transactions.</p>
-              ) : (
-                transactions.map((txn) => (
-                  <div key={txn.transaction_id} className="transaction-item">
-                    <div className="txn-info">
-                      <strong>{txn.name}</strong>
-                      <p>{new Date(txn.date).toLocaleDateString()}</p>
-                    </div>
-                    <div className={`txn-amount ${txn.amount > 0 ? 'debit' : 'credit'}`}>
-                      {formatCurrency(Math.abs(txn.amount))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

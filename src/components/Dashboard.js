@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../db';
+import SummaryScreen from './SummaryScreen';
 import Bills from './Bills';
 import BudgetGrid from './BudgetGrid';
 import ReservesGrid from './ReservesGrid';
@@ -7,7 +8,7 @@ import IncomeTracker from './IncomeTracker';
 import './Dashboard.css';
 
 function Dashboard() {
-  const [activeTab, setActiveTab] = useState('accounts');
+  const [activeTab, setActiveTab] = useState('summary');
   const [accounts, setAccounts] = useState([]);
   const [summary, setSummary] = useState({
     totalBankBalance: '0.00',
@@ -15,13 +16,15 @@ function Dashboard() {
     netAvailableCash: '0.00',
   });
   const [unpaidBills, setUnpaidBills] = useState(0);
-  const [reservesTotal, setReservesTotal] = useState(0);
-  const [incomeTotal, setIncomeTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
   const [draggedItem, setDraggedItem] = useState(null);
+
+  // Bumped whenever accounts/bills/reserves/income change, so the Summary tab refetches
+  const [summaryRefreshKey, setSummaryRefreshKey] = useState(0);
+  const bumpSummary = () => setSummaryRefreshKey(k => k + 1);
 
   // New account form
   const [showAddForm, setShowAddForm] = useState(false);
@@ -48,6 +51,9 @@ function Dashboard() {
   const [showBankAccounts, setShowBankAccounts] = useState(false);
   const [showCreditAccounts, setShowCreditAccounts] = useState(false);
 
+  // Options menu (Export/Import tucked away)
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+
   // Initialize database
   useEffect(() => {
     const initDB = async () => {
@@ -55,8 +61,6 @@ function Dashboard() {
         await db.init();
         await db.autoGenerateBills(); // creates this month's recurring bills from Budget, once per month
         fetchAccounts();
-        fetchReservesTotal();
-        fetchIncomeTotal();
       } catch (error) {
         console.error('Failed to initialize database:', error);
         setError('Failed to initialize database');
@@ -67,12 +71,9 @@ function Dashboard() {
   }, []);
 
   // Re-sync whenever the person switches back to the Accounts tab
-  // (covers bills/reserves/income changed while on another tab)
   useEffect(() => {
     if (activeTab === 'accounts') {
       fetchUnpaidBills();
-      fetchReservesTotal();
-      fetchIncomeTotal();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -99,28 +100,6 @@ function Dashboard() {
       setUnpaidBills(unpaid);
     } catch (error) {
       console.error('Error fetching bills:', error);
-    }
-  };
-
-  const fetchReservesTotal = async () => {
-    try {
-      const reserves = await db.getReserves();
-      const total = reserves.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-      setReservesTotal(total);
-    } catch (error) {
-      console.error('Error fetching reserves:', error);
-    }
-  };
-
-  const fetchIncomeTotal = async () => {
-    try {
-      const income = await db.getIncome();
-      const total = income
-        .filter(e => !e.received)
-        .reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
-      setIncomeTotal(total);
-    } catch (error) {
-      console.error('Error fetching income:', error);
     }
   };
 
@@ -168,6 +147,7 @@ function Dashboard() {
       });
 
       await fetchUnpaidBills();
+      bumpSummary();
     } catch (err) {
       setError('Failed to fetch accounts');
       console.error(err);
@@ -383,10 +363,12 @@ function Dashboard() {
       console.error('Error exporting data:', error);
       alert('Failed to export data');
     }
+    setShowOptionsMenu(false);
   };
 
   const handleImport = async (e) => {
     const file = e.target.files[0];
+    setShowOptionsMenu(false);
     if (!file) return;
 
     const reader = new FileReader();
@@ -400,8 +382,6 @@ function Dashboard() {
 
         await db.importData(data);
         fetchAccounts();
-        fetchReservesTotal();
-        fetchIncomeTotal();
         alert('Data imported successfully!');
       } catch (error) {
         console.error('Error importing data:', error);
@@ -420,8 +400,6 @@ function Dashboard() {
   };
 
   const trueAvailableCash = parseFloat(summary.netAvailableCash) - unpaidBills;
-  const superTrueCash = trueAvailableCash - reservesTotal;
-  const totalResources = trueAvailableCash + incomeTotal;
 
   const bankAccounts = accounts
     .filter(a => a.type === 'depository')
@@ -560,22 +538,39 @@ function Dashboard() {
           <h1>Cash Flow Tracker</h1>
         </div>
         <div className="header-actions">
-          <button onClick={handleExport} className="export-btn" title="Export Data">
-            📥 Export
+          <button
+            className="options-btn"
+            onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+            title="Options"
+          >
+            ⋯
           </button>
-          <label className="import-btn" title="Import Data">
-            📤 Import
-            <input
-              type="file"
-              accept=".json"
-              onChange={handleImport}
-              style={{ display: 'none' }}
-            />
-          </label>
+          {showOptionsMenu && (
+            <div className="options-menu">
+              <button onClick={handleExport} className="options-menu-item">
+                📥 Export Data
+              </button>
+              <label className="options-menu-item options-menu-import">
+                📤 Import Data
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImport}
+                  style={{ display: 'none' }}
+                />
+              </label>
+            </div>
+          )}
         </div>
       </header>
 
       <div className="tabs">
+        <button
+          className={`tab ${activeTab === 'summary' ? 'active' : ''}`}
+          onClick={() => setActiveTab('summary')}
+        >
+          Summary
+        </button>
         <button
           className={`tab ${activeTab === 'accounts' ? 'active' : ''}`}
           onClick={() => setActiveTab('accounts')}
@@ -608,6 +603,10 @@ function Dashboard() {
         </button>
       </div>
 
+      {activeTab === 'summary' && (
+        <SummaryScreen refreshKey={summaryRefreshKey} />
+      )}
+
       {activeTab === 'accounts' && (
         <>
           <div className="summary-container">
@@ -624,26 +623,38 @@ function Dashboard() {
               <div className="amount">{formatCurrency(summary.totalBankBalance)}</div>
             </div>
 
+            {showBankAccounts && (
+              <div className="inline-accounts-expansion">
+                {bankAccounts.length === 0 ? (
+                  <div className="empty-state small">No bank accounts added yet.</div>
+                ) : (
+                  <div className="accounts-grid">
+                    {bankAccounts.map(account => renderAccount(account, 'bank'))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="summary-card credit" onClick={() => setShowCreditAccounts(!showCreditAccounts)}>
               <h3>Total Credit Balance Owed {showCreditAccounts ? '▼' : '▶'}</h3>
               <div className="amount">{formatCurrency(summary.totalCreditBalance)}</div>
             </div>
 
+            {showCreditAccounts && (
+              <div className="inline-accounts-expansion">
+                {creditAccounts.length === 0 ? (
+                  <div className="empty-state small">No credit cards added yet.</div>
+                ) : (
+                  <div className="accounts-grid">
+                    {creditAccounts.map(account => renderAccount(account, 'credit'))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="summary-card bills">
               <h3>Unpaid Bills</h3>
               <div className="amount">{formatCurrency(unpaidBills)}</div>
-            </div>
-
-            <div className="summary-card reserves">
-              <h3>Super True Cash</h3>
-              <div className="amount">{formatCurrency(superTrueCash)}</div>
-              <p className="formula">True Available Cash - Reserves</p>
-            </div>
-
-            <div className="summary-card income">
-              <h3>Total Resources</h3>
-              <div className="amount">{formatCurrency(totalResources)}</div>
-              <p className="formula">True Available Cash + Expected Income</p>
             </div>
           </div>
 
@@ -712,41 +723,11 @@ function Dashboard() {
           )}
 
           {error && <div className="error-message">{error}</div>}
-
-          {showBankAccounts && (
-            <div className="accounts-section">
-              <h2>Bank Accounts</h2>
-              {bankAccounts.length === 0 ? (
-                <div className="empty-state">
-                  <p>No bank accounts added. Click "+ Add Account" to get started.</p>
-                </div>
-              ) : (
-                <div className="accounts-grid">
-                  {bankAccounts.map(account => renderAccount(account, 'bank'))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {showCreditAccounts && (
-            <div className="accounts-section">
-              <h2>Credit Cards</h2>
-              {creditAccounts.length === 0 ? (
-                <div className="empty-state">
-                  <p>No credit cards added.</p>
-                </div>
-              ) : (
-                <div className="accounts-grid">
-                  {creditAccounts.map(account => renderAccount(account, 'credit'))}
-                </div>
-              )}
-            </div>
-          )}
         </>
       )}
 
       {activeTab === 'bills' && (
-        <Bills onBillsChange={fetchUnpaidBills} />
+        <Bills onBillsChange={() => { fetchUnpaidBills(); bumpSummary(); }} />
       )}
 
       {activeTab === 'budget' && (
@@ -754,11 +735,11 @@ function Dashboard() {
       )}
 
       {activeTab === 'reserves' && (
-        <ReservesGrid onReservesChange={fetchReservesTotal} />
+        <ReservesGrid onReservesChange={bumpSummary} />
       )}
 
       {activeTab === 'income' && (
-        <IncomeTracker onIncomeChange={fetchIncomeTotal} />
+        <IncomeTracker onIncomeChange={bumpSummary} />
       )}
     </div>
   );

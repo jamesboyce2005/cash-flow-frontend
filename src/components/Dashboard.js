@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../db';
 import Bills from './Bills';
 import BudgetGrid from './BudgetGrid';
+import ReservesGrid from './ReservesGrid';
+import IncomeTracker from './IncomeTracker';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -13,6 +15,8 @@ function Dashboard() {
     netAvailableCash: '0.00',
   });
   const [unpaidBills, setUnpaidBills] = useState(0);
+  const [reservesTotal, setReservesTotal] = useState(0);
+  const [incomeTotal, setIncomeTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [renamingAccount, setRenamingAccount] = useState(null);
@@ -49,7 +53,10 @@ function Dashboard() {
     const initDB = async () => {
       try {
         await db.init();
+        await db.autoGenerateBills(); // creates this month's recurring bills from Budget, once per month
         fetchAccounts();
+        fetchReservesTotal();
+        fetchIncomeTotal();
       } catch (error) {
         console.error('Failed to initialize database:', error);
         setError('Failed to initialize database');
@@ -59,29 +66,61 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-sync unpaid bills total whenever the person switches back to the Accounts tab
-  // (covers bills added/paid/deleted while on the Bills tab)
+  // Re-sync whenever the person switches back to the Accounts tab
+  // (covers bills/reserves/income changed while on another tab)
   useEffect(() => {
     if (activeTab === 'accounts') {
       fetchUnpaidBills();
+      fetchReservesTotal();
+      fetchIncomeTotal();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Fetch unpaid bills
+  // Fetch unpaid bills (current month + anything unpaid carried forward)
   const fetchUnpaidBills = async () => {
     try {
       const now = new Date();
       const month = now.getMonth() + 1;
       const year = now.getFullYear();
 
-      const bills = await db.getBills(month, year);
-      const unpaid = bills
+      const allBills = await db.getAllBills();
+      const isBeforeCurrentMonth = (b) =>
+        b.year < year || (b.year === year && b.month < month);
+
+      const relevant = allBills.filter(b =>
+        (b.month === month && b.year === year) ||
+        (!b.is_paid && isBeforeCurrentMonth(b))
+      );
+
+      const unpaid = relevant
         .filter(b => !b.is_paid)
         .reduce((sum, bill) => sum + parseFloat(bill.amount), 0);
       setUnpaidBills(unpaid);
     } catch (error) {
       console.error('Error fetching bills:', error);
+    }
+  };
+
+  const fetchReservesTotal = async () => {
+    try {
+      const reserves = await db.getReserves();
+      const total = reserves.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+      setReservesTotal(total);
+    } catch (error) {
+      console.error('Error fetching reserves:', error);
+    }
+  };
+
+  const fetchIncomeTotal = async () => {
+    try {
+      const income = await db.getIncome();
+      const total = income
+        .filter(e => !e.received)
+        .reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+      setIncomeTotal(total);
+    } catch (error) {
+      console.error('Error fetching income:', error);
     }
   };
 
@@ -106,7 +145,6 @@ function Dashboard() {
           last_updated: acc.last_updated,
         };
 
-        // Calculate totals
         if (acc.type === 'credit') {
           const creditLimit = parseFloat(acc.credit_limit) || 0;
           const balance = parseFloat(acc.last_balance) || 0;
@@ -116,7 +154,6 @@ function Dashboard() {
           account.availableCredit = creditLimit - balance;
           totalCreditBalance += balance;
         } else {
-          // Bank accounts
           totalBankBalance += parseFloat(acc.last_balance) || 0;
         }
 
@@ -156,11 +193,8 @@ function Dashboard() {
         credit_limit: newAccount.type === 'credit' ? parseFloat(newAccount.credit_limit || 0) : null
       });
 
-      // Reset form
       setNewAccount({ name: '', type: 'depository', balance: '', credit_limit: '' });
       setShowAddForm(false);
-
-      // Refresh accounts
       fetchAccounts();
     } catch (error) {
       console.error('Error creating account:', error);
@@ -168,7 +202,6 @@ function Dashboard() {
     }
   };
 
-  // Update balance (bank accounts only)
   const startEditBalance = (account) => {
     setEditingBalance(account.id);
     setEditBalance(account.balance.toString());
@@ -193,7 +226,6 @@ function Dashboard() {
     setEditBalance('');
   };
 
-  // Update credit limit (credit cards only)
   const startEditCreditLimit = (account) => {
     setEditingCreditLimit(account.id);
     setEditCreditLimit(account.limit.toString());
@@ -218,7 +250,6 @@ function Dashboard() {
     setEditCreditLimit('');
   };
 
-  // Update available credit (credit cards only)
   const startEditAvailableCredit = (account) => {
     setEditingAvailableCredit(account.id);
     setEditAvailableCredit(account.availableCredit.toString());
@@ -226,7 +257,6 @@ function Dashboard() {
 
   const saveAvailableCredit = async (accountId, currentLimit) => {
     try {
-      // Calculate new balance: balance = limit - available
       const newBalance = currentLimit - parseFloat(editAvailableCredit);
 
       await db.updateAccount(accountId, {
@@ -246,7 +276,6 @@ function Dashboard() {
     setEditAvailableCredit('');
   };
 
-  // Delete account
   const deleteAccount = async (accountId, accountName) => {
     if (!window.confirm(`Are you sure you want to delete "${accountName}"?`)) {
       return;
@@ -305,7 +334,6 @@ function Dashboard() {
 
     const sourceAccount = draggedItem.account;
 
-    // Get all accounts of this type
     const accountsOfType = accounts.filter(a =>
       (targetType === 'bank' && a.type === 'depository') ||
       (targetType === 'credit' && a.type === 'credit')
@@ -319,12 +347,10 @@ function Dashboard() {
       return;
     }
 
-    // Reorder
     const reordered = [...accountsOfType];
     const [removed] = reordered.splice(sourceIndex, 1);
     reordered.splice(targetIndex, 0, removed);
 
-    // Update display_order
     const updates = reordered.map((acc, idx) => ({
       accountId: acc.id,
       order: idx
@@ -341,7 +367,6 @@ function Dashboard() {
     setDraggedItem(null);
   };
 
-  // Export data
   const handleExport = async () => {
     try {
       const data = await db.exportData();
@@ -360,7 +385,6 @@ function Dashboard() {
     }
   };
 
-  // Import data
   const handleImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -376,6 +400,8 @@ function Dashboard() {
 
         await db.importData(data);
         fetchAccounts();
+        fetchReservesTotal();
+        fetchIncomeTotal();
         alert('Data imported successfully!');
       } catch (error) {
         console.error('Error importing data:', error);
@@ -383,7 +409,7 @@ function Dashboard() {
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // Reset input
+    e.target.value = '';
   };
 
   const formatCurrency = (amount) => {
@@ -394,8 +420,9 @@ function Dashboard() {
   };
 
   const trueAvailableCash = parseFloat(summary.netAvailableCash) - unpaidBills;
+  const superTrueCash = trueAvailableCash - reservesTotal;
+  const totalResources = trueAvailableCash + incomeTotal;
 
-  // Separate and sort accounts
   const bankAccounts = accounts
     .filter(a => a.type === 'depository')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
@@ -439,13 +466,11 @@ function Dashboard() {
 
       {account.type === 'credit' ? (
         <>
-          {/* Balance Owed - NOT editable */}
           <div className="balance">
             <span className="label">Balance Owed:</span>
             <span className="value">{formatCurrency(account.creditBalance)}</span>
           </div>
 
-          {/* Available Credit - EDITABLE */}
           {editingAvailableCredit === account.id ? (
             <div className="edit-balance">
               <label>Available Credit:</label>
@@ -466,7 +491,6 @@ function Dashboard() {
             </div>
           )}
 
-          {/* Credit Limit - EDITABLE */}
           {editingCreditLimit === account.id ? (
             <div className="edit-balance">
               <label>Credit Limit:</label>
@@ -489,7 +513,6 @@ function Dashboard() {
         </>
       ) : (
         <>
-          {/* Bank Account Balance - EDITABLE */}
           {editingBalance === account.id ? (
             <div className="edit-balance">
               <label>Available:</label>
@@ -571,6 +594,18 @@ function Dashboard() {
         >
           Budget
         </button>
+        <button
+          className={`tab ${activeTab === 'reserves' ? 'active' : ''}`}
+          onClick={() => setActiveTab('reserves')}
+        >
+          Reserves
+        </button>
+        <button
+          className={`tab ${activeTab === 'income' ? 'active' : ''}`}
+          onClick={() => setActiveTab('income')}
+        >
+          Income
+        </button>
       </div>
 
       {activeTab === 'accounts' && (
@@ -597,6 +632,18 @@ function Dashboard() {
             <div className="summary-card bills">
               <h3>Unpaid Bills</h3>
               <div className="amount">{formatCurrency(unpaidBills)}</div>
+            </div>
+
+            <div className="summary-card reserves">
+              <h3>Super True Cash</h3>
+              <div className="amount">{formatCurrency(superTrueCash)}</div>
+              <p className="formula">True Available Cash - Reserves</p>
+            </div>
+
+            <div className="summary-card income">
+              <h3>Total Resources</h3>
+              <div className="amount">{formatCurrency(totalResources)}</div>
+              <p className="formula">True Available Cash + Expected Income</p>
             </div>
           </div>
 
@@ -704,6 +751,14 @@ function Dashboard() {
 
       {activeTab === 'budget' && (
         <BudgetGrid />
+      )}
+
+      {activeTab === 'reserves' && (
+        <ReservesGrid onReservesChange={fetchReservesTotal} />
+      )}
+
+      {activeTab === 'income' && (
+        <IncomeTracker onIncomeChange={fetchIncomeTotal} />
       )}
     </div>
   );

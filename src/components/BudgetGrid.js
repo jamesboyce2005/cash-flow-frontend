@@ -167,46 +167,57 @@ function BudgetGrid() {
     }
   };
 
-  // === Row drag-and-drop reordering ===
-  // Drag only starts from the ⋮⋮ handle (not from clicking anywhere in the row),
-  // which is what made it feel "wonky" before.
+  // === Row reordering ===
+  // Native HTML5 drag-and-drop (dragstart/dragover/drop) does NOT fire from
+  // touch input on iOS Safari — that's why dragging never worked on the phone.
+  // Pointer Events (pointerdown/pointermove/pointerup) work for both touch and
+  // mouse, so reordering is implemented with those instead.
+  const rowRefs = React.useRef({});
 
-  const handleHandleDragStart = (e, category) => {
+  const handlePointerDown = (e, category) => {
+    e.preventDefault();
     setDraggedCategory(category);
-    e.dataTransfer.effectAllowed = 'move';
-    // Firefox requires setData to allow dragging
-    e.dataTransfer.setData('text/plain', category);
-  };
-
-  const handleRowDragOver = (e, category) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (category !== dragOverCategory) {
-      setDragOverCategory(category);
+    try {
+      e.target.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // ignore if pointer capture isn't supported
     }
   };
 
-  const handleRowDragLeave = () => {
-    setDragOverCategory(null);
+  const handlePointerMove = (e) => {
+    if (!draggedCategory) return;
+    const y = e.clientY;
+    let foundCategory = null;
+
+    for (const [cat, node] of Object.entries(rowRefs.current)) {
+      if (!node) continue;
+      const rect = node.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) {
+        foundCategory = cat;
+        break;
+      }
+    }
+
+    if (foundCategory && foundCategory !== dragOverCategory) {
+      setDragOverCategory(foundCategory);
+    }
   };
 
-  const handleRowDrop = async (e, targetCategory) => {
-    e.preventDefault();
+  const handlePointerUp = async () => {
+    if (!draggedCategory) return;
+
+    const sourceCategory = draggedCategory;
+    const targetCategory = dragOverCategory;
+    setDraggedCategory(null);
     setDragOverCategory(null);
 
-    if (!draggedCategory || draggedCategory === targetCategory) {
-      setDraggedCategory(null);
-      return;
-    }
+    if (!targetCategory || sourceCategory === targetCategory) return;
 
     const sorted = [...categories].sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
-    const sourceIndex = sorted.findIndex(c => c.category === draggedCategory);
+    const sourceIndex = sorted.findIndex(c => c.category === sourceCategory);
     const targetIndex = sorted.findIndex(c => c.category === targetCategory);
 
-    if (sourceIndex === -1 || targetIndex === -1) {
-      setDraggedCategory(null);
-      return;
-    }
+    if (sourceIndex === -1 || targetIndex === -1) return;
 
     const reordered = [...sorted];
     const [removed] = reordered.splice(sourceIndex, 1);
@@ -223,13 +234,6 @@ function BudgetGrid() {
       console.error('Error reordering categories:', error);
       fetchBudget();
     }
-
-    setDraggedCategory(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedCategory(null);
-    setDragOverCategory(null);
   };
 
   const exportToCSV = () => {
@@ -395,9 +399,7 @@ function BudgetGrid() {
                 {sortedCategories.map((cat) => (
                   <tr
                     key={cat.category}
-                    onDragOver={(e) => handleRowDragOver(e, cat.category)}
-                    onDragLeave={handleRowDragLeave}
-                    onDrop={(e) => handleRowDrop(e, cat.category)}
+                    ref={(el) => (rowRefs.current[cat.category] = el)}
                     className={
                       (draggedCategory === cat.category ? 'dragging-row ' : '') +
                       (dragOverCategory === cat.category && draggedCategory !== cat.category ? 'drag-over-row' : '')
@@ -406,9 +408,10 @@ function BudgetGrid() {
                     <td className="drag-cell sticky-col">
                       <span
                         className="drag-handle"
-                        draggable
-                        onDragStart={(e) => handleHandleDragStart(e, cat.category)}
-                        onDragEnd={handleDragEnd}
+                        onPointerDown={(e) => handlePointerDown(e, cat.category)}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onPointerCancel={handlePointerUp}
                         title="Drag to reorder"
                       >
                         ⋮⋮
@@ -497,10 +500,6 @@ function BudgetGrid() {
         </table>
       </div>
 
-      <div className="budget-info">
-        <p>🔁 Check "Recurring" to auto-create this bill on the 1st of each month using that month's amount.</p>
-        <p>↕️ Drag the ⋮⋮ handle to reorder categories.</p>
-      </div>
     </div>
   );
 }

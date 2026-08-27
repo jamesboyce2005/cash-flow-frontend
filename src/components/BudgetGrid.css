@@ -159,19 +159,23 @@
 .grid-wrapper {
   overflow: auto;
   margin-bottom: 20px;
+  --cell-font-size: 14px;
+  --cell-padding: 12px;
+  --month-col-width: 90px;
 }
 
 .budget-grid {
   border-collapse: collapse;
-  font-size: 14px;
-  min-width: 1300px;
+  font-size: var(--cell-font-size);
+  width: max-content;
 }
 
 .budget-grid th,
 .budget-grid td {
   border: 1px solid #e0e0e0;
-  padding: 12px;
+  padding: var(--cell-padding);
   text-align: center;
+  transition: padding 0.15s, font-size 0.15s;
 }
 
 .budget-grid thead th {
@@ -260,7 +264,7 @@ td.drag-cell {
 }
 
 .month-header {
-  min-width: 90px;
+  min-width: var(--month-col-width);
 }
 
 .month-header.current-month {

@@ -18,7 +18,7 @@ function Dashboard() {
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
   const [draggedItem, setDraggedItem] = useState(null);
-  
+
   // New account form
   const [showAddForm, setShowAddForm] = useState(false);
   const [newAccount, setNewAccount] = useState({
@@ -27,19 +27,19 @@ function Dashboard() {
     balance: '',
     credit_limit: ''
   });
-  
+
   // Edit balance (for bank accounts)
   const [editingBalance, setEditingBalance] = useState(null);
   const [editBalance, setEditBalance] = useState('');
-  
+
   // Edit credit limit (for credit cards)
   const [editingCreditLimit, setEditingCreditLimit] = useState(null);
   const [editCreditLimit, setEditCreditLimit] = useState('');
-  
+
   // Edit available credit (for credit cards)
   const [editingAvailableCredit, setEditingAvailableCredit] = useState(null);
   const [editAvailableCredit, setEditAvailableCredit] = useState('');
-  
+
   // Expandable sections
   const [showBankAccounts, setShowBankAccounts] = useState(false);
   const [showCreditAccounts, setShowCreditAccounts] = useState(false);
@@ -56,7 +56,17 @@ function Dashboard() {
       }
     };
     initDB();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-sync unpaid bills total whenever the person switches back to the Accounts tab
+  // (covers bills added/paid/deleted while on the Bills tab)
+  useEffect(() => {
+    if (activeTab === 'accounts') {
+      fetchUnpaidBills();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Fetch unpaid bills
   const fetchUnpaidBills = async () => {
@@ -64,7 +74,7 @@ function Dashboard() {
       const now = new Date();
       const month = now.getMonth() + 1;
       const year = now.getFullYear();
-      
+
       const bills = await db.getBills(month, year);
       const unpaid = bills
         .filter(b => !b.is_paid)
@@ -81,7 +91,7 @@ function Dashboard() {
     setError('');
     try {
       const accountsData = await db.getAccounts();
-      
+
       let totalBankBalance = 0;
       let totalCreditBalance = 0;
 
@@ -100,7 +110,7 @@ function Dashboard() {
         if (acc.type === 'credit') {
           const creditLimit = parseFloat(acc.credit_limit) || 0;
           const balance = parseFloat(acc.last_balance) || 0;
-          
+
           account.limit = creditLimit;
           account.creditBalance = balance;
           account.availableCredit = creditLimit - balance;
@@ -119,7 +129,7 @@ function Dashboard() {
         totalCreditBalance: totalCreditBalance.toFixed(2),
         netAvailableCash: (totalBankBalance - totalCreditBalance).toFixed(2),
       });
-      
+
       await fetchUnpaidBills();
     } catch (err) {
       setError('Failed to fetch accounts');
@@ -132,12 +142,12 @@ function Dashboard() {
   // Create new account
   const handleCreateAccount = async (e) => {
     e.preventDefault();
-    
+
     if (!newAccount.name || !newAccount.balance) {
       alert('Please fill in account name and balance');
       return;
     }
-    
+
     try {
       await db.addAccount({
         name: newAccount.name,
@@ -145,11 +155,11 @@ function Dashboard() {
         last_balance: parseFloat(newAccount.balance),
         credit_limit: newAccount.type === 'credit' ? parseFloat(newAccount.credit_limit || 0) : null
       });
-      
+
       // Reset form
       setNewAccount({ name: '', type: 'depository', balance: '', credit_limit: '' });
       setShowAddForm(false);
-      
+
       // Refresh accounts
       fetchAccounts();
     } catch (error) {
@@ -169,7 +179,7 @@ function Dashboard() {
       await db.updateAccount(accountId, {
         last_balance: parseFloat(editBalance)
       });
-      
+
       setEditingBalance(null);
       fetchAccounts();
     } catch (error) {
@@ -194,7 +204,7 @@ function Dashboard() {
       await db.updateAccount(accountId, {
         credit_limit: parseFloat(editCreditLimit)
       });
-      
+
       setEditingCreditLimit(null);
       fetchAccounts();
     } catch (error) {
@@ -218,11 +228,11 @@ function Dashboard() {
     try {
       // Calculate new balance: balance = limit - available
       const newBalance = currentLimit - parseFloat(editAvailableCredit);
-      
+
       await db.updateAccount(accountId, {
         last_balance: newBalance
       });
-      
+
       setEditingAvailableCredit(null);
       fetchAccounts();
     } catch (error) {
@@ -241,7 +251,7 @@ function Dashboard() {
     if (!window.confirm(`Are you sure you want to delete "${accountName}"?`)) {
       return;
     }
-    
+
     try {
       await db.deleteAccount(accountId);
       fetchAccounts();
@@ -261,7 +271,7 @@ function Dashboard() {
       await db.updateAccount(accountId, {
         custom_name: newName
       });
-      
+
       setRenamingAccount(null);
       fetchAccounts();
     } catch (error) {
@@ -287,16 +297,16 @@ function Dashboard() {
 
   const handleDrop = async (e, targetAccount, targetType) => {
     e.preventDefault();
-    
+
     if (!draggedItem || draggedItem.accountType !== targetType) {
       setDraggedItem(null);
       return;
     }
 
     const sourceAccount = draggedItem.account;
-    
+
     // Get all accounts of this type
-    const accountsOfType = accounts.filter(a => 
+    const accountsOfType = accounts.filter(a =>
       (targetType === 'bank' && a.type === 'depository') ||
       (targetType === 'credit' && a.type === 'credit')
     ).sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
@@ -359,7 +369,7 @@ function Dashboard() {
     reader.onload = async (event) => {
       try {
         const data = JSON.parse(event.target.result);
-        
+
         if (!window.confirm('This will replace ALL your current data. Are you sure?')) {
           return;
         }
@@ -389,7 +399,7 @@ function Dashboard() {
   const bankAccounts = accounts
     .filter(a => a.type === 'depository')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
-  
+
   const creditAccounts = accounts
     .filter(a => a.type === 'credit')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
@@ -426,7 +436,7 @@ function Dashboard() {
           <h3>{account.custom_name || account.name}</h3>
         )}
       </div>
-      
+
       {account.type === 'credit' ? (
         <>
           {/* Balance Owed - NOT editable */}
@@ -434,7 +444,7 @@ function Dashboard() {
             <span className="label">Balance Owed:</span>
             <span className="value">{formatCurrency(account.creditBalance)}</span>
           </div>
-          
+
           {/* Available Credit - EDITABLE */}
           {editingAvailableCredit === account.id ? (
             <div className="edit-balance">
@@ -455,7 +465,7 @@ function Dashboard() {
               <span className="value clickable">{formatCurrency(account.availableCredit)}</span>
             </div>
           )}
-          
+
           {/* Credit Limit - EDITABLE */}
           {editingCreditLimit === account.id ? (
             <div className="edit-balance">
@@ -501,14 +511,14 @@ function Dashboard() {
           )}
         </>
       )}
-      
+
       {account.last_updated && (
         <p className={`last-updated ${isBalanceStale(account.last_updated) ? 'stale' : ''}`}>
           Updated: {new Date(account.last_updated).toLocaleDateString()}
           {isBalanceStale(account.last_updated) && ' ⚠️'}
         </p>
       )}
-      
+
       <div className="account-actions">
         <button onClick={() => startRename(account)} className="action-btn" title="Rename">
           ✏️ Rename
@@ -543,19 +553,19 @@ function Dashboard() {
       </header>
 
       <div className="tabs">
-        <button 
+        <button
           className={`tab ${activeTab === 'accounts' ? 'active' : ''}`}
           onClick={() => setActiveTab('accounts')}
         >
           Accounts
         </button>
-        <button 
+        <button
           className={`tab ${activeTab === 'bills' ? 'active' : ''}`}
           onClick={() => setActiveTab('bills')}
         >
           Bills
         </button>
-        <button 
+        <button
           className={`tab ${activeTab === 'budget' ? 'active' : ''}`}
           onClick={() => setActiveTab('budget')}
         >
@@ -610,7 +620,7 @@ function Dashboard() {
                     required
                   />
                 </div>
-                
+
                 <div className="form-group">
                   <label>Account Type:</label>
                   <select
@@ -621,7 +631,7 @@ function Dashboard() {
                     <option value="credit">Credit Card</option>
                   </select>
                 </div>
-                
+
                 <div className="form-group">
                   <label>
                     {newAccount.type === 'credit' ? 'Current Balance Owed:' : 'Current Balance:'}
@@ -635,7 +645,7 @@ function Dashboard() {
                     required
                   />
                 </div>
-                
+
                 {newAccount.type === 'credit' && (
                   <div className="form-group">
                     <label>Credit Limit:</label>
@@ -648,7 +658,7 @@ function Dashboard() {
                     />
                   </div>
                 )}
-                
+
                 <button type="submit" className="submit-btn">Create Account</button>
               </form>
             </div>
@@ -689,7 +699,7 @@ function Dashboard() {
       )}
 
       {activeTab === 'bills' && (
-        <Bills />
+        <Bills onBillsChange={fetchUnpaidBills} />
       )}
 
       {activeTab === 'budget' && (

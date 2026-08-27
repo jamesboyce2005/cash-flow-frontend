@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from '../db';
 import './Bills.css';
 
-function Bills() {
+function Bills({ onBillsChange }) {
   const [bills, setBills] = useState([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newBill, setNewBill] = useState({
@@ -13,6 +13,7 @@ function Bills() {
 
   useEffect(() => {
     fetchBills();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchBills = async () => {
@@ -20,7 +21,7 @@ function Bills() {
       const now = new Date();
       const month = now.getMonth() + 1;
       const year = now.getFullYear();
-      
+
       const billsData = await db.getBills(month, year);
       setBills(billsData);
     } catch (error) {
@@ -28,9 +29,17 @@ function Bills() {
     }
   };
 
+  // Refresh this tab's list AND tell Dashboard to recalculate Unpaid Bills / True Available Cash
+  const refreshAll = async () => {
+    await fetchBills();
+    if (onBillsChange) {
+      onBillsChange();
+    }
+  };
+
   const handleAddBill = async (e) => {
     e.preventDefault();
-    
+
     if (!newBill.name || !newBill.amount || !newBill.due_day) {
       alert('Please fill in all fields');
       return;
@@ -52,7 +61,7 @@ function Bills() {
 
       setNewBill({ name: '', amount: '', due_day: '' });
       setShowAddForm(false);
-      fetchBills();
+      refreshAll();
     } catch (error) {
       console.error('Error adding bill:', error);
       alert('Failed to add bill');
@@ -64,7 +73,7 @@ function Bills() {
       await db.updateBill(billId, {
         is_paid: !currentStatus
       });
-      fetchBills();
+      refreshAll();
     } catch (error) {
       console.error('Error toggling bill status:', error);
     }
@@ -77,7 +86,7 @@ function Bills() {
 
     try {
       await db.deleteBill(billId);
-      fetchBills();
+      refreshAll();
     } catch (error) {
       console.error('Error deleting bill:', error);
       alert('Failed to delete bill');

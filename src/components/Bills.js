@@ -1,322 +1,485 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
-import './Bills.css';
+import './BudgetGrid.css';
 
-function Bills({ onBillsChange }) {
-  const [bills, setBills] = useState([]);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [newBill, setNewBill] = useState({
-    name: '',
-    amount: '',
-    due_day: ''
-  });
+function BudgetGrid() {
+  const currentYear = new Date().getFullYear();
+  const currentMonth = new Date().getMonth() + 1; // 1-12
 
-  // Editing an existing bill
-  const [editingBillId, setEditingBillId] = useState(null);
-  const [editBill, setEditBill] = useState({ name: '', amount: '', due_day: '' });
+  const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [categories, setCategories] = useState([]);
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [editingCell, setEditingCell] = useState(null); // {category, month}
+  const [editValue, setEditValue] = useState('');
+  const [draggedCategory, setDraggedCategory] = useState(null);
+  const [dragOverCategory, setDragOverCategory] = useState(null);
+  const [zoom, setZoom] = useState(100); // percent
 
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthsFull = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const years = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
 
   useEffect(() => {
-    fetchBills();
+    fetchBudget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedYear]);
 
-  // Show this month's bills PLUS any still-unpaid bills from earlier months
-  // (so something that straddles months doesn't just vanish)
-  const fetchBills = async () => {
+  const fetchBudget = async () => {
     try {
-      const allBills = await db.getAllBills();
-
-      const isBeforeCurrentMonth = (b) =>
-        b.year < currentYear || (b.year === currentYear && b.month < currentMonth);
-
-      const relevant = allBills.filter(b =>
-        (b.month === currentMonth && b.year === currentYear) ||
-        (!b.is_paid && isBeforeCurrentMonth(b))
-      );
-
-      // Unpaid first, then sort by due day
-      relevant.sort((a, b) => {
-        if (a.is_paid !== b.is_paid) return a.is_paid ? 1 : -1;
-        return a.due_day - b.due_day;
-      });
-
-      setBills(relevant);
+      const budgetData = await db.getBudgetForYear(selectedYear);
+      setCategories(budgetData);
     } catch (error) {
-      console.error('Error fetching bills:', error);
+      console.error('Error fetching budget:', error);
     }
   };
 
-  // Refresh this tab's list AND tell Dashboard to recalculate Unpaid Bills / True Available Cash
-  const refreshAll = async () => {
-    await fetchBills();
-    if (onBillsChange) {
-      onBillsChange();
-    }
-  };
-
-  const handleAddBill = async (e) => {
+  const handleAddCategory = async (e) => {
     e.preventDefault();
 
-    if (!newBill.name || !newBill.amount || !newBill.due_day) {
-      alert('Please fill in all fields');
+    if (!newCategoryName.trim()) {
+      alert('Please enter a category name');
+      return;
+    }
+
+    if (categories.find(c => c.category === newCategoryName)) {
+      alert('Category already exists');
+      return;
+    }
+
+    try {
+      await db.addBudgetCategory(selectedYear, newCategoryName);
+      setNewCategoryName('');
+      setShowAddCategory(false);
+      fetchBudget();
+    } catch (error) {
+      console.error('Error adding category:', error);
+      alert('Failed to add category');
+    }
+  };
+
+  const handleDeleteCategory = async (category) => {
+    if (!window.confirm(`Delete "${category}" from ${selectedYear} budget?`)) {
+      return;
+    }
+
+    try {
+      await db.deleteBudgetCategory(selectedYear, category);
+      fetchBudget();
+    } catch (error) {
+      console.error('Error deleting category:', error);
+      alert('Failed to delete category');
+    }
+  };
+
+  const handleToggleRecurring = async (category) => {
+    try {
+      await db.toggleBudgetRecurring(selectedYear, category);
+      fetchBudget();
+    } catch (error) {
+      console.error('Error toggling recurring:', error);
+      alert('Failed to update recurring status');
+    }
+  };
+
+  const startEdit = (category, month) => {
+    const categoryData = categories.find(c => c.category === category);
+    const currentValue = categoryData?.amounts?.[month] || 0;
+
+    setEditingCell({ category, month });
+    setEditValue(currentValue.toString());
+  };
+
+  const saveEdit = async () => {
+    if (!editingCell) return;
+
+    const { category, month } = editingCell;
+    const categoryData = categories.find(c => c.category === category);
+
+    if (!categoryData) return;
+
+    try {
+      const updatedAmounts = {
+        ...categoryData.amounts,
+        [month]: parseFloat(editValue) || 0
+      };
+
+      await db.updateBudgetAmounts(selectedYear, category, updatedAmounts);
+      setEditingCell(null);
+      fetchBudget();
+    } catch (error) {
+      console.error('Error saving amount:', error);
+      alert('Failed to save amount');
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditingCell(null);
+    setEditValue('');
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      saveEdit();
+    } else if (e.key === 'Escape') {
+      cancelEdit();
+    }
+  };
+
+  // Create a real bill (in the Bills tab) from this category's amount for the CURRENT real-world month
+  const handleCreateBill = async (category) => {
+    const categoryData = categories.find(c => c.category === category);
+
+    const now = new Date();
+    const realMonth = now.getMonth() + 1;
+    const realYear = now.getFullYear();
+    const amount = categoryData?.amounts?.[realMonth] || 0;
+
+    if (selectedYear !== realYear) {
+      const confirmed = window.confirm(
+        `This will create a bill for ${monthsFull[realMonth - 1]} ${realYear} (the current month) using the ${category} amount from that month's column ($${amount}). Continue?`
+      );
+      if (!confirmed) return;
+    }
+
+    const dueDayInput = window.prompt(`What day of the month is "${category}" due?`, '1');
+    if (dueDayInput === null) return; // cancelled
+
+    const dueDay = parseInt(dueDayInput);
+    if (!dueDay || dueDay < 1 || dueDay > 31) {
+      alert('Please enter a valid day (1-31)');
       return;
     }
 
     try {
       await db.addBill({
-        name: newBill.name,
-        amount: parseFloat(newBill.amount),
-        due_day: parseInt(newBill.due_day),
-        month: currentMonth,
-        year: currentYear,
+        name: category,
+        amount: amount,
+        due_day: dueDay,
+        month: realMonth,
+        year: realYear,
         is_paid: false
       });
-
-      setNewBill({ name: '', amount: '', due_day: '' });
-      setShowAddForm(false);
-      refreshAll();
+      alert(`Bill created for "${category}"! Go to the Bills tab to view or edit it.`);
     } catch (error) {
-      console.error('Error adding bill:', error);
-      alert('Failed to add bill');
+      console.error('Error creating bill:', error);
+      alert('Failed to create bill');
     }
   };
 
-  const togglePaid = async (billId, currentStatus) => {
-    try {
-      await db.updateBill(billId, {
-        is_paid: !currentStatus
-      });
-      refreshAll();
-    } catch (error) {
-      console.error('Error toggling bill status:', error);
+  // === Row drag-and-drop reordering ===
+  // Drag only starts from the ⋮⋮ handle (not from clicking anywhere in the row),
+  // which is what made it feel "wonky" before.
+
+  const handleHandleDragStart = (e, category) => {
+    setDraggedCategory(category);
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox requires setData to allow dragging
+    e.dataTransfer.setData('text/plain', category);
+  };
+
+  const handleRowDragOver = (e, category) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (category !== dragOverCategory) {
+      setDragOverCategory(category);
     }
   };
 
-  const deleteBill = async (billId, billName) => {
-    if (!window.confirm(`Delete "${billName}"?`)) {
+  const handleRowDragLeave = () => {
+    setDragOverCategory(null);
+  };
+
+  const handleRowDrop = async (e, targetCategory) => {
+    e.preventDefault();
+    setDragOverCategory(null);
+
+    if (!draggedCategory || draggedCategory === targetCategory) {
+      setDraggedCategory(null);
       return;
     }
 
-    try {
-      await db.deleteBill(billId);
-      refreshAll();
-    } catch (error) {
-      console.error('Error deleting bill:', error);
-      alert('Failed to delete bill');
+    const sorted = [...categories].sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+    const sourceIndex = sorted.findIndex(c => c.category === draggedCategory);
+    const targetIndex = sorted.findIndex(c => c.category === targetCategory);
+
+    if (sourceIndex === -1 || targetIndex === -1) {
+      setDraggedCategory(null);
+      return;
     }
+
+    const reordered = [...sorted];
+    const [removed] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, removed);
+
+    const orders = reordered.map((cat, idx) => ({ category: cat.category, order: idx }));
+
+    // Optimistic UI update
+    setCategories(reordered.map((cat, idx) => ({ ...cat, display_order: idx })));
+
+    try {
+      await db.updateBudgetOrder(selectedYear, orders);
+    } catch (error) {
+      console.error('Error reordering categories:', error);
+      fetchBudget();
+    }
+
+    setDraggedCategory(null);
   };
 
-  const startEditBill = (bill) => {
-    setEditingBillId(bill.id);
-    setEditBill({
-      name: bill.name,
-      amount: bill.amount.toString(),
-      due_day: bill.due_day.toString()
+  const handleDragEnd = () => {
+    setDraggedCategory(null);
+    setDragOverCategory(null);
+  };
+
+  const exportToCSV = () => {
+    let csv = `Category,${months.join(',')},Total\n`;
+
+    categories.forEach(cat => {
+      const amounts = months.map((_, idx) => {
+        const month = idx + 1;
+        return cat.amounts?.[month] || 0;
+      });
+      const total = amounts.reduce((sum, amt) => sum + amt, 0);
+      csv += `${cat.category},${amounts.join(',')},${total}\n`;
     });
-  };
 
-  const cancelEditBill = () => {
-    setEditingBillId(null);
-    setEditBill({ name: '', amount: '', due_day: '' });
-  };
+    const monthlyTotals = months.map((_, idx) => {
+      const month = idx + 1;
+      return categories.reduce((sum, cat) => sum + (cat.amounts?.[month] || 0), 0);
+    });
+    const grandTotal = monthlyTotals.reduce((sum, amt) => sum + amt, 0);
+    csv += `TOTAL,${monthlyTotals.join(',')},${grandTotal}\n`;
 
-  const saveEditBill = async (billId) => {
-    if (!editBill.name || !editBill.amount || !editBill.due_day) {
-      alert('Please fill in all fields');
-      return;
-    }
-
-    try {
-      await db.updateBill(billId, {
-        name: editBill.name,
-        amount: parseFloat(editBill.amount),
-        due_day: parseInt(editBill.due_day)
-      });
-
-      setEditingBillId(null);
-      refreshAll();
-    } catch (error) {
-      console.error('Error updating bill:', error);
-      alert('Failed to update bill');
-    }
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `budget-${selectedYear}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(amount);
   };
 
-  const isCarriedForward = (bill) =>
-    bill.year < currentYear || (bill.year === currentYear && bill.month < currentMonth);
+  const getMonthTotal = (month) => {
+    return categories.reduce((sum, cat) => sum + (cat.amounts?.[month] || 0), 0);
+  };
 
-  const totalBills = bills.reduce((sum, bill) => sum + parseFloat(bill.amount), 0);
-  const paidBills = bills.filter(b => b.is_paid).reduce((sum, bill) => sum + parseFloat(bill.amount), 0);
-  const unpaidBills = totalBills - paidBills;
+  const getCategoryTotal = (category) => {
+    const categoryData = categories.find(c => c.category === category);
+    if (!categoryData) return 0;
+
+    let total = 0;
+    for (let month = 1; month <= 12; month++) {
+      total += categoryData.amounts?.[month] || 0;
+    }
+    return total;
+  };
+
+  const getGrandTotal = () => {
+    return categories.reduce((sum, cat) => sum + getCategoryTotal(cat.category), 0);
+  };
+
+  const sortedCategories = [...categories].sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+
+  const zoomIn = () => setZoom(z => Math.min(100, z + 10));
+  const zoomOut = () => setZoom(z => Math.max(50, z - 10));
 
   return (
-    <div className="bills-container">
-      <div className="bills-summary">
-        <div className="summary-item">
-          <span className="label">Total Bills:</span>
-          <span className="value">{formatCurrency(totalBills)}</span>
+    <div className="budget-grid-container">
+      <div className="budget-header">
+        <div className="year-selector">
+          <label>Year:</label>
+          <select value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value))}>
+            {years.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
         </div>
-        <div className="summary-item">
-          <span className="label">Paid:</span>
-          <span className="value paid">{formatCurrency(paidBills)}</span>
+
+        <div className="zoom-controls">
+          <button onClick={zoomOut} className="zoom-btn" title="Zoom Out">－</button>
+          <span className="zoom-level">{zoom}%</span>
+          <button onClick={zoomIn} className="zoom-btn" title="Zoom In">＋</button>
         </div>
-        <div className="summary-item">
-          <span className="label">Unpaid:</span>
-          <span className="value unpaid">{formatCurrency(unpaidBills)}</span>
+
+        <div className="budget-actions">
+          <button onClick={() => setShowAddCategory(!showAddCategory)} className="add-category-btn">
+            {showAddCategory ? '✕ Cancel' : '+ Add Category'}
+          </button>
+          <button onClick={exportToCSV} className="export-csv-btn">
+            📊 Export CSV
+          </button>
         </div>
       </div>
 
-      <div className="bills-actions">
-        <button onClick={() => setShowAddForm(!showAddForm)} className="add-bill-btn">
-          {showAddForm ? '✕ Cancel' : '+ Add Bill'}
-        </button>
-      </div>
-
-      {showAddForm && (
-        <div className="add-bill-form">
-          <h3>Add New Bill</h3>
-          <form onSubmit={handleAddBill}>
-            <div className="form-group">
-              <label>Bill Name:</label>
-              <input
-                type="text"
-                value={newBill.name}
-                onChange={(e) => setNewBill({ ...newBill, name: e.target.value })}
-                placeholder="e.g., Electric Bill"
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label>Amount:</label>
-              <input
-                type="number"
-                step="0.01"
-                value={newBill.amount}
-                onChange={(e) => setNewBill({ ...newBill, amount: e.target.value })}
-                placeholder="0.00"
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label>Due Day of Month:</label>
-              <input
-                type="number"
-                min="1"
-                max="31"
-                value={newBill.due_day}
-                onChange={(e) => setNewBill({ ...newBill, due_day: e.target.value })}
-                placeholder="15"
-                required
-              />
-            </div>
-
-            <button type="submit" className="submit-btn">Add Bill</button>
+      {showAddCategory && (
+        <div className="add-category-form">
+          <form onSubmit={handleAddCategory}>
+            <input
+              type="text"
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder="Category name (e.g., Rent, Electric)"
+              autoFocus
+            />
+            <button type="submit" className="save-btn">Add</button>
+            <button type="button" onClick={() => { setShowAddCategory(false); setNewCategoryName(''); }} className="cancel-btn">Cancel</button>
           </form>
         </div>
       )}
 
-      <div className="bills-list">
-        {bills.length === 0 ? (
-          <div className="empty-state">
-            <p>No bills for this month. Click "+ Add Bill" to get started.</p>
-          </div>
-        ) : (
-          bills.map((bill) => (
-            <div key={bill.id} className={`bill-card ${bill.is_paid ? 'paid' : 'unpaid'}`}>
-              {editingBillId === bill.id ? (
-                <div className="bill-edit-form">
-                  <div className="form-group">
-                    <label>Bill Name:</label>
-                    <input
-                      type="text"
-                      value={editBill.name}
-                      onChange={(e) => setEditBill({ ...editBill, name: e.target.value })}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Amount:</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={editBill.amount}
-                      onChange={(e) => setEditBill({ ...editBill, amount: e.target.value })}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Due Day of Month:</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={editBill.due_day}
-                      onChange={(e) => setEditBill({ ...editBill, due_day: e.target.value })}
-                    />
-                  </div>
-                  <div className="bill-edit-actions">
-                    <button onClick={() => saveEditBill(bill.id)} className="save-btn">✓ Save</button>
-                    <button onClick={cancelEditBill} className="cancel-btn">✕ Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="bill-info">
-                    <h3>
-                      {bill.name}
-                      {isCarriedForward(bill) && (
-                        <span className="carried-badge" title={`From ${monthNames[bill.month - 1]} ${bill.year}`}>
-                          ⚠️ from {monthNames[bill.month - 1]}
-                        </span>
-                      )}
-                    </h3>
-                    <p className="due-date">Due: Day {bill.due_day}</p>
-                  </div>
-                  <div className="bill-amount">
-                    {formatCurrency(bill.amount)}
-                  </div>
-                  <div className="bill-actions">
-                    <button
-                      onClick={() => togglePaid(bill.id, bill.is_paid)}
-                      className={`status-btn ${bill.is_paid ? 'paid' : 'unpaid'}`}
-                    >
-                      {bill.is_paid ? '✓ Paid' : 'Mark Paid'}
-                    </button>
-                    <button
-                      onClick={() => startEditBill(bill)}
-                      className="edit-btn"
-                      title="Edit"
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      onClick={() => deleteBill(bill.id, bill.name)}
-                      className="delete-btn"
-                      title="Delete"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))
-        )}
+      {/* zoom applied here via CSS `zoom` (not transform) so sticky positioning and
+          horizontal scroll width stay correct at every zoom level */}
+      <div className="grid-wrapper" style={{ zoom: zoom / 100 }}>
+        <table className="budget-grid">
+          <thead>
+            <tr>
+              <th className="drag-header sticky-col"></th>
+              <th className="category-header sticky-col">Category</th>
+              <th className="recurring-header">Recurring</th>
+              {months.map((month, idx) => (
+                <th
+                  key={month}
+                  className={`month-header ${selectedYear === currentYear && idx + 1 === currentMonth ? 'current-month' : ''}`}
+                >
+                  {month}
+                </th>
+              ))}
+              <th className="total-header">Total</th>
+              <th className="actions-header"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedCategories.length === 0 ? (
+              <tr>
+                <td colSpan={18} className="empty-state">
+                  No categories yet. Click "+ Add Category" to get started.
+                </td>
+              </tr>
+            ) : (
+              <>
+                {sortedCategories.map((cat) => (
+                  <tr
+                    key={cat.category}
+                    onDragOver={(e) => handleRowDragOver(e, cat.category)}
+                    onDragLeave={handleRowDragLeave}
+                    onDrop={(e) => handleRowDrop(e, cat.category)}
+                    className={
+                      (draggedCategory === cat.category ? 'dragging-row ' : '') +
+                      (dragOverCategory === cat.category && draggedCategory !== cat.category ? 'drag-over-row' : '')
+                    }
+                  >
+                    <td className="drag-cell sticky-col">
+                      <span
+                        className="drag-handle"
+                        draggable
+                        onDragStart={(e) => handleHandleDragStart(e, cat.category)}
+                        onDragEnd={handleDragEnd}
+                        title="Drag to reorder"
+                      >
+                        ⋮⋮
+                      </span>
+                    </td>
+                    <td className="category-cell sticky-col">{cat.category}</td>
+                    <td className="recurring-cell">
+                      <input
+                        type="checkbox"
+                        checked={!!cat.is_recurring}
+                        onChange={() => handleToggleRecurring(cat.category)}
+                        title="Auto-create this bill on the 1st of each month"
+                      />
+                    </td>
+                    {months.map((_, idx) => {
+                      const month = idx + 1;
+                      const amount = cat.amounts?.[month] || 0;
+                      const isEditing = editingCell?.category === cat.category && editingCell?.month === month;
+                      const isCurrentMonth = selectedYear === currentYear && month === currentMonth;
+
+                      return (
+                        <td
+                          key={month}
+                          className={`amount-cell ${isCurrentMonth ? 'current-month' : ''}`}
+                          onClick={() => !isEditing && startEdit(cat.category, month)}
+                        >
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={saveEdit}
+                              onKeyDown={handleKeyDown}
+                              autoFocus
+                              className="amount-input"
+                            />
+                          ) : (
+                            <span className="amount-display">
+                              {amount > 0 ? formatCurrency(amount) : '-'}
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="total-cell">{formatCurrency(getCategoryTotal(cat.category))}</td>
+                    <td className="actions-cell">
+                      <button
+                        onClick={() => handleCreateBill(cat.category)}
+                        className="create-bill-btn"
+                        title="Create Bill from this category"
+                      >
+                        📝
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCategory(cat.category)}
+                        className="delete-category-btn"
+                        title="Delete Category"
+                      >
+                        🗑️
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="totals-row">
+                  <td className="drag-cell sticky-col"></td>
+                  <td className="category-cell sticky-col"><strong>TOTAL</strong></td>
+                  <td className="recurring-cell"></td>
+                  {months.map((_, idx) => {
+                    const month = idx + 1;
+                    const isCurrentMonth = selectedYear === currentYear && month === currentMonth;
+                    return (
+                      <td key={month} className={`total-cell ${isCurrentMonth ? 'current-month' : ''}`}>
+                        <strong>{formatCurrency(getMonthTotal(month))}</strong>
+                      </td>
+                    );
+                  })}
+                  <td className="total-cell grand-total">
+                    <strong>{formatCurrency(getGrandTotal())}</strong>
+                  </td>
+                  <td className="actions-cell"></td>
+                </tr>
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="budget-info">
+        <p>🔁 Check "Recurring" to auto-create this bill on the 1st of each month using that month's amount.</p>
+        <p>↕️ Drag the ⋮⋮ handle to reorder categories.</p>
       </div>
     </div>
   );
 }
 
-export default Bills;
+export default BudgetGrid;

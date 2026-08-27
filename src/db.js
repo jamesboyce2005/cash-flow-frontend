@@ -1,6 +1,6 @@
 // IndexedDB wrapper for local storage
 const DB_NAME = 'CashFlowDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 class LocalDB {
   constructor() {
@@ -38,6 +38,21 @@ class LocalDB {
           const budgetStore = db.createObjectStore('budget', { keyPath: 'id', autoIncrement: true });
           budgetStore.createIndex('year_category', ['year', 'category'], { unique: true });
         }
+
+        // Create meta store (small key/value settings, e.g. last auto-generate month)
+        if (!db.objectStoreNames.contains('meta')) {
+          db.createObjectStore('meta', { keyPath: 'key' });
+        }
+
+        // Create reserves store
+        if (!db.objectStoreNames.contains('reserves')) {
+          db.createObjectStore('reserves', { keyPath: 'id', autoIncrement: true });
+        }
+
+        // Create income store
+        if (!db.objectStoreNames.contains('income')) {
+          db.createObjectStore('income', { keyPath: 'id', autoIncrement: true });
+        }
       };
     });
   }
@@ -58,15 +73,14 @@ class LocalDB {
   async addAccount(account) {
     const transaction = this.db.transaction(['accounts'], 'readwrite');
     const store = transaction.objectStore('accounts');
-    
-    // Get max display_order within this transaction
+
     const getAllRequest = store.getAll();
-    
+
     return new Promise((resolve, reject) => {
       getAllRequest.onsuccess = () => {
         const accounts = getAllRequest.result || [];
         const maxOrder = accounts.reduce((max, acc) => Math.max(max, acc.display_order || 0), -1);
-        
+
         const newAccount = {
           ...account,
           display_order: maxOrder + 1,
@@ -162,6 +176,18 @@ class LocalDB {
     });
   }
 
+  // All bills, unfiltered - used to find unpaid bills that predate the current month (carry-forward)
+  async getAllBills() {
+    const transaction = this.db.transaction(['bills'], 'readonly');
+    const store = transaction.objectStore('bills');
+    const request = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   async addBill(bill) {
     const transaction = this.db.transaction(['bills'], 'readwrite');
     const store = transaction.objectStore('bills');
@@ -206,96 +232,66 @@ class LocalDB {
     });
   }
 
-  // === EXPORT/IMPORT ===
+  // === META (small settings like "last auto-generate month") ===
 
-  async exportData() {
-    const accounts = await this.getAccounts();
-    
-    // Get all bills
-    const billTransaction = this.db.transaction(['bills'], 'readonly');
-    const billStore = billTransaction.objectStore('bills');
-    const billsRequest = billStore.getAll();
-
-    // Get all budget data
-    const budgetTransaction = this.db.transaction(['budget'], 'readonly');
-    const budgetStore = budgetTransaction.objectStore('budget');
-    const budgetRequest = budgetStore.getAll();
+  async getMeta(key) {
+    const transaction = this.db.transaction(['meta'], 'readonly');
+    const store = transaction.objectStore('meta');
+    const request = store.get(key);
 
     return new Promise((resolve, reject) => {
-      let bills = [];
-      let budget = [];
-
-      billsRequest.onsuccess = () => {
-        bills = billsRequest.result || [];
-        
-        budgetRequest.onsuccess = () => {
-          budget = budgetRequest.result || [];
-          
-          resolve({
-            version: 2,
-            exportDate: new Date().toISOString(),
-            accounts,
-            bills,
-            budget
-          });
-        };
-        budgetRequest.onerror = () => reject(budgetRequest.error);
-      };
-      billsRequest.onerror = () => reject(billsRequest.error);
+      request.onsuccess = () => resolve(request.result ? request.result.value : null);
+      request.onerror = () => reject(request.error);
     });
   }
 
-  async importData(data) {
-    // Clear existing data
-    const clearAccounts = this.db.transaction(['accounts'], 'readwrite').objectStore('accounts').clear();
-    const clearBills = this.db.transaction(['bills'], 'readwrite').objectStore('bills').clear();
-    const clearBudget = this.db.transaction(['budget'], 'readwrite').objectStore('budget').clear();
+  async setMeta(key, value) {
+    const transaction = this.db.transaction(['meta'], 'readwrite');
+    const store = transaction.objectStore('meta');
+    const request = store.put({ key, value });
 
-    await Promise.all([
-      new Promise((resolve, reject) => {
-        clearAccounts.onsuccess = () => resolve();
-        clearAccounts.onerror = () => reject(clearAccounts.error);
-      }),
-      new Promise((resolve, reject) => {
-        clearBills.onsuccess = () => resolve();
-        clearBills.onerror = () => reject(clearBills.error);
-      }),
-      new Promise((resolve, reject) => {
-        clearBudget.onsuccess = () => resolve();
-        clearBudget.onerror = () => reject(clearBudget.error);
-      })
-    ]);
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error);
+    });
+  }
 
-    // Import accounts
-    const accountTransaction = this.db.transaction(['accounts'], 'readwrite');
-    const accountStore = accountTransaction.objectStore('accounts');
-    for (const account of data.accounts) {
-      accountStore.add(account);
+  // Auto-create bills from any budget category marked "recurring", using that
+  // category's amount for the current real-world month. Runs once per month
+  // (tracked via the meta store) no matter how many times the app is opened.
+  async autoGenerateBills() {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+
+    const last = await this.getMeta('lastAutoGenerate');
+    if (last && last.month === month && last.year === year) {
+      return { generated: false, count: 0 };
     }
 
-    // Import bills
-    const billTransaction = this.db.transaction(['bills'], 'readwrite');
-    const billStore = billTransaction.objectStore('bills');
-    for (const bill of data.bills) {
-      billStore.add(bill);
-    }
+    const budgets = await this.getBudgetForYear(year);
+    const recurring = budgets.filter(b => b.is_recurring);
 
-    // Import budget (if exists in backup)
-    if (data.budget && data.budget.length > 0) {
-      const budgetTransaction = this.db.transaction(['budget'], 'readwrite');
-      const budgetStore = budgetTransaction.objectStore('budget');
-      for (const budgetEntry of data.budget) {
-        budgetStore.add(budgetEntry);
-      }
+    const existingBills = await this.getBills(month, year);
+    const existingNames = new Set(existingBills.map(b => b.name));
 
-      return new Promise((resolve) => {
-        budgetTransaction.oncomplete = () => resolve(true);
+    let count = 0;
+    for (const cat of recurring) {
+      if (existingNames.has(cat.category)) continue; // don't duplicate if it already exists
+      const amount = (cat.amounts && cat.amounts[month]) || 0;
+      await this.addBill({
+        name: cat.category,
+        amount,
+        due_day: 1,
+        month,
+        year,
+        is_paid: false
       });
-    } else {
-      return new Promise((resolve) => {
-        billTransaction.oncomplete = () => resolve(true);
-      });
+      count++;
     }
+
+    await this.setMeta('lastAutoGenerate', { month, year });
+    return { generated: true, count };
   }
 
   // === BUDGET GRID ===
@@ -308,14 +304,46 @@ class LocalDB {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => {
         const budgets = request.result || [];
-        const filtered = budgets.filter(b => b.year === year);
+        const filtered = budgets
+          .filter(b => b.year === year)
+          .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
         resolve(filtered);
       };
       request.onerror = () => reject(request.error);
     });
   }
 
-  async saveBudgetCategory(year, category, amounts) {
+  async addBudgetCategory(year, category) {
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const getAllRequest = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      getAllRequest.onsuccess = () => {
+        const all = getAllRequest.result || [];
+        const sameYear = all.filter(b => b.year === year);
+        const maxOrder = sameYear.reduce((max, b) => Math.max(max, b.display_order || 0), -1);
+
+        const amounts = {};
+        for (let i = 1; i <= 12; i++) amounts[i] = 0;
+
+        const newBudget = {
+          year,
+          category,
+          amounts,
+          is_recurring: false,
+          display_order: maxOrder + 1
+        };
+
+        const addRequest = store.add(newBudget);
+        addRequest.onsuccess = () => resolve({ ...newBudget, id: addRequest.result });
+        addRequest.onerror = () => reject(addRequest.error);
+      };
+      getAllRequest.onerror = () => reject(getAllRequest.error);
+    });
+  }
+
+  async updateBudgetAmounts(year, category, amounts) {
     const transaction = this.db.transaction(['budget'], 'readwrite');
     const store = transaction.objectStore('budget');
     const index = store.index('year_category');
@@ -324,23 +352,66 @@ class LocalDB {
     return new Promise((resolve, reject) => {
       getRequest.onsuccess = () => {
         const existing = getRequest.result;
-        
-        if (existing) {
-          // Update existing
-          const updated = { ...existing, amounts };
-          const putRequest = store.put(updated);
-          putRequest.onsuccess = () => resolve(updated);
-          putRequest.onerror = () => reject(putRequest.error);
-        } else {
-          // Create new
-          const newBudget = { year, category, amounts };
-          const addRequest = store.add(newBudget);
-          addRequest.onsuccess = () => resolve({ ...newBudget, id: addRequest.result });
-          addRequest.onerror = () => reject(addRequest.error);
+        if (!existing) {
+          reject(new Error('Budget category not found'));
+          return;
         }
+        const updated = { ...existing, amounts };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
       };
       getRequest.onerror = () => reject(getRequest.error);
     });
+  }
+
+  async toggleBudgetRecurring(year, category) {
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const index = store.index('year_category');
+    const getRequest = index.get([year, category]);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const existing = getRequest.result;
+        if (!existing) {
+          reject(new Error('Budget category not found'));
+          return;
+        }
+        const updated = { ...existing, is_recurring: !existing.is_recurring };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+  }
+
+  async updateBudgetOrder(year, categoryOrders) {
+    // categoryOrders: [{ category, order }]
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const index = store.index('year_category');
+
+    const promises = categoryOrders.map(({ category, order }) => {
+      return new Promise((resolve, reject) => {
+        const getRequest = index.get([year, category]);
+        getRequest.onsuccess = () => {
+          const existing = getRequest.result;
+          if (existing) {
+            existing.display_order = order;
+            const putRequest = store.put(existing);
+            putRequest.onsuccess = () => resolve();
+            putRequest.onerror = () => reject(putRequest.error);
+          } else {
+            resolve();
+          }
+        };
+        getRequest.onerror = () => reject(getRequest.error);
+      });
+    });
+
+    return Promise.all(promises);
   }
 
   async deleteBudgetCategory(year, category) {
@@ -362,6 +433,222 @@ class LocalDB {
       };
       getRequest.onerror = () => reject(getRequest.error);
     });
+  }
+
+  // === RESERVES ===
+
+  async getReserves() {
+    const transaction = this.db.transaction(['reserves'], 'readonly');
+    const store = transaction.objectStore('reserves');
+    const request = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        const reserves = request.result || [];
+        resolve(reserves.sort((a, b) => (a.display_order || 0) - (b.display_order || 0)));
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async addReserve(reserve) {
+    const transaction = this.db.transaction(['reserves'], 'readwrite');
+    const store = transaction.objectStore('reserves');
+    const getAllRequest = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      getAllRequest.onsuccess = () => {
+        const all = getAllRequest.result || [];
+        const maxOrder = all.reduce((max, r) => Math.max(max, r.display_order || 0), -1);
+        const newReserve = { ...reserve, display_order: maxOrder + 1 };
+
+        const addRequest = store.add(newReserve);
+        addRequest.onsuccess = () => resolve({ ...newReserve, id: addRequest.result });
+        addRequest.onerror = () => reject(addRequest.error);
+      };
+      getAllRequest.onerror = () => reject(getAllRequest.error);
+    });
+  }
+
+  async updateReserve(id, updates) {
+    const transaction = this.db.transaction(['reserves'], 'readwrite');
+    const store = transaction.objectStore('reserves');
+    const getRequest = store.get(id);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const reserve = getRequest.result;
+        if (!reserve) {
+          reject(new Error('Reserve not found'));
+          return;
+        }
+        const updated = { ...reserve, ...updates };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+  }
+
+  async deleteReserve(id) {
+    const transaction = this.db.transaction(['reserves'], 'readwrite');
+    const store = transaction.objectStore('reserves');
+    const request = store.delete(id);
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  // === EXPECTED INCOME ===
+
+  async getIncome() {
+    const transaction = this.db.transaction(['income'], 'readonly');
+    const store = transaction.objectStore('income');
+    const request = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async addIncome(entry) {
+    const transaction = this.db.transaction(['income'], 'readwrite');
+    const store = transaction.objectStore('income');
+    const request = store.add(entry);
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve({ ...entry, id: request.result });
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async updateIncome(id, updates) {
+    const transaction = this.db.transaction(['income'], 'readwrite');
+    const store = transaction.objectStore('income');
+    const getRequest = store.get(id);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const entry = getRequest.result;
+        if (!entry) {
+          reject(new Error('Income entry not found'));
+          return;
+        }
+        const updated = { ...entry, ...updates };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+  }
+
+  async deleteIncome(id) {
+    const transaction = this.db.transaction(['income'], 'readwrite');
+    const store = transaction.objectStore('income');
+    const request = store.delete(id);
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  // === EXPORT/IMPORT ===
+
+  async exportData() {
+    const accounts = await this.getAccounts();
+    const reserves = await this.getReserves();
+    const income = await this.getIncome();
+
+    const billTransaction = this.db.transaction(['bills'], 'readonly');
+    const billStore = billTransaction.objectStore('bills');
+    const billsRequest = billStore.getAll();
+
+    const budgetTransaction = this.db.transaction(['budget'], 'readonly');
+    const budgetStore = budgetTransaction.objectStore('budget');
+    const budgetRequest = budgetStore.getAll();
+
+    return new Promise((resolve, reject) => {
+      billsRequest.onsuccess = () => {
+        const bills = billsRequest.result || [];
+
+        budgetRequest.onsuccess = () => {
+          const budget = budgetRequest.result || [];
+
+          resolve({
+            version: 3,
+            exportDate: new Date().toISOString(),
+            accounts,
+            bills,
+            budget,
+            reserves,
+            income
+          });
+        };
+        budgetRequest.onerror = () => reject(budgetRequest.error);
+      };
+      billsRequest.onerror = () => reject(billsRequest.error);
+    });
+  }
+
+  async importData(data) {
+    const storesToClear = ['accounts', 'bills', 'budget', 'reserves', 'income'];
+
+    await Promise.all(storesToClear.map(storeName => {
+      return new Promise((resolve, reject) => {
+        const clearRequest = this.db.transaction([storeName], 'readwrite').objectStore(storeName).clear();
+        clearRequest.onsuccess = () => resolve();
+        clearRequest.onerror = () => reject(clearRequest.error);
+      });
+    }));
+
+    // Import accounts
+    const accountTransaction = this.db.transaction(['accounts'], 'readwrite');
+    const accountStore = accountTransaction.objectStore('accounts');
+    for (const account of data.accounts || []) {
+      accountStore.add(account);
+    }
+
+    // Import bills
+    const billTransaction = this.db.transaction(['bills'], 'readwrite');
+    const billStore = billTransaction.objectStore('bills');
+    for (const bill of data.bills || []) {
+      billStore.add(bill);
+    }
+
+    // Import budget
+    if (data.budget && data.budget.length > 0) {
+      const budgetTransaction = this.db.transaction(['budget'], 'readwrite');
+      const budgetStore = budgetTransaction.objectStore('budget');
+      for (const budgetEntry of data.budget) {
+        budgetStore.add(budgetEntry);
+      }
+    }
+
+    // Import reserves
+    if (data.reserves && data.reserves.length > 0) {
+      const reserveTransaction = this.db.transaction(['reserves'], 'readwrite');
+      const reserveStore = reserveTransaction.objectStore('reserves');
+      for (const reserve of data.reserves) {
+        reserveStore.add(reserve);
+      }
+    }
+
+    // Import income
+    if (data.income && data.income.length > 0) {
+      const incomeTransaction = this.db.transaction(['income'], 'readwrite');
+      const incomeStore = incomeTransaction.objectStore('income');
+      for (const entry of data.income) {
+        incomeStore.add(entry);
+      }
+    }
+
+    return true;
   }
 }
 

@@ -74,38 +74,35 @@
   border-top: 1px solid #f0f0f0;
 }
 
+/* Compact pill nav — sits directly on the page background, not a heavy card,
+   so it stays a row or two and doesn't compete with the Summary screen below. */
 .tabs {
   display: flex;
-  gap: 10px;
-  margin-bottom: 30px;
-  background: white;
-  padding: 10px;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  gap: 6px;
+  margin-bottom: 18px;
   flex-wrap: wrap;
 }
 
 .tab {
-  flex: 1;
-  min-width: 100px;
-  padding: 12px 20px;
-  background: transparent;
-  color: #666;
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 20px;
   cursor: pointer;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
-  transition: all 0.3s;
+  transition: all 0.2s;
 }
 
 .tab:hover {
-  background: #f5f5f5;
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .tab.active {
-  background: #667eea;
-  color: white;
+  background: white;
+  color: #667eea;
 }
 
 .summary-container {
@@ -568,10 +565,6 @@
 
   .add-account-btn {
     width: 100%;
-  }
-
-  .tabs {
-    flex-direction: column;
   }
 
   .account-actions {

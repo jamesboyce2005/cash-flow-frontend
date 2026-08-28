@@ -15,12 +15,10 @@ function Dashboard() {
     totalCreditBalance: '0.00',
     netAvailableCash: '0.00',
   });
-  const [unpaidBills, setUnpaidBills] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [renamingAccount, setRenamingAccount] = useState(null);
   const [newName, setNewName] = useState('');
-  const [draggedItem, setDraggedItem] = useState(null);
 
   // Bumped whenever accounts/bills/reserves/income change, so the Summary tab refetches
   const [summaryRefreshKey, setSummaryRefreshKey] = useState(0);
@@ -70,39 +68,6 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-sync whenever the person switches back to the Accounts tab
-  useEffect(() => {
-    if (activeTab === 'accounts') {
-      fetchUnpaidBills();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
-
-  // Fetch unpaid bills (current month + anything unpaid carried forward)
-  const fetchUnpaidBills = async () => {
-    try {
-      const now = new Date();
-      const month = now.getMonth() + 1;
-      const year = now.getFullYear();
-
-      const allBills = await db.getAllBills();
-      const isBeforeCurrentMonth = (b) =>
-        b.year < year || (b.year === year && b.month < month);
-
-      const relevant = allBills.filter(b =>
-        (b.month === month && b.year === year) ||
-        (!b.is_paid && isBeforeCurrentMonth(b))
-      );
-
-      const unpaid = relevant
-        .filter(b => !b.is_paid)
-        .reduce((sum, bill) => sum + parseFloat(bill.amount), 0);
-      setUnpaidBills(unpaid);
-    } catch (error) {
-      console.error('Error fetching bills:', error);
-    }
-  };
-
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
     setLoading(true);
@@ -146,7 +111,6 @@ function Dashboard() {
         netAvailableCash: (totalBankBalance - totalCreditBalance).toFixed(2),
       });
 
-      await fetchUnpaidBills();
       bumpSummary();
     } catch (err) {
       setError('Failed to fetch accounts');
@@ -294,59 +258,6 @@ function Dashboard() {
     setNewName('');
   };
 
-  const handleDragStart = (e, account, accountType) => {
-    setDraggedItem({ account, accountType });
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleDrop = async (e, targetAccount, targetType) => {
-    e.preventDefault();
-
-    if (!draggedItem || draggedItem.accountType !== targetType) {
-      setDraggedItem(null);
-      return;
-    }
-
-    const sourceAccount = draggedItem.account;
-
-    const accountsOfType = accounts.filter(a =>
-      (targetType === 'bank' && a.type === 'depository') ||
-      (targetType === 'credit' && a.type === 'credit')
-    ).sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
-
-    const sourceIndex = accountsOfType.findIndex(a => a.id === sourceAccount.id);
-    const targetIndex = accountsOfType.findIndex(a => a.id === targetAccount.id);
-
-    if (sourceIndex === targetIndex) {
-      setDraggedItem(null);
-      return;
-    }
-
-    const reordered = [...accountsOfType];
-    const [removed] = reordered.splice(sourceIndex, 1);
-    reordered.splice(targetIndex, 0, removed);
-
-    const updates = reordered.map((acc, idx) => ({
-      accountId: acc.id,
-      order: idx
-    }));
-
-    try {
-      await db.updateAccountOrder(updates);
-      fetchAccounts();
-    } catch (error) {
-      console.error('Error reordering accounts:', error);
-      fetchAccounts();
-    }
-
-    setDraggedItem(null);
-  };
-
   const handleExport = async () => {
     try {
       const data = await db.exportData();
@@ -399,8 +310,6 @@ function Dashboard() {
     }).format(amount);
   };
 
-  const trueAvailableCash = parseFloat(summary.netAvailableCash) - unpaidBills;
-
   const bankAccounts = accounts
     .filter(a => a.type === 'depository')
     .sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
@@ -415,16 +324,11 @@ function Dashboard() {
     return daysSince >= 7;
   };
 
-  const renderAccount = (account, accountType) => (
+  const renderAccount = (account) => (
     <div
       key={account.id}
       className={`account-card ${account.type} ${isBalanceStale(account.last_updated) ? 'stale' : ''}`}
-      draggable
-      onDragStart={(e) => handleDragStart(e, account, accountType)}
-      onDragOver={handleDragOver}
-      onDrop={(e) => handleDrop(e, account, accountType)}
     >
-      <div className="drag-handle">⋮⋮</div>
       <div className="account-header">
         {renamingAccount === account.id ? (
           <div className="rename-input">
@@ -610,14 +514,6 @@ function Dashboard() {
       {activeTab === 'accounts' && (
         <>
           <div className="summary-container">
-            <div className="summary-card total">
-              <h2>True Available Cash</h2>
-              <div className="amount">
-                {formatCurrency(trueAvailableCash)}
-              </div>
-              <p className="formula">Bank - Credit Cards - Unpaid Bills</p>
-            </div>
-
             <div className="summary-card bank" onClick={() => setShowBankAccounts(!showBankAccounts)}>
               <h3>Total Bank Balance {showBankAccounts ? '▼' : '▶'}</h3>
               <div className="amount">{formatCurrency(summary.totalBankBalance)}</div>
@@ -629,7 +525,7 @@ function Dashboard() {
                   <div className="empty-state small">No bank accounts added yet.</div>
                 ) : (
                   <div className="accounts-grid">
-                    {bankAccounts.map(account => renderAccount(account, 'bank'))}
+                    {bankAccounts.map(account => renderAccount(account))}
                   </div>
                 )}
               </div>
@@ -646,16 +542,11 @@ function Dashboard() {
                   <div className="empty-state small">No credit cards added yet.</div>
                 ) : (
                   <div className="accounts-grid">
-                    {creditAccounts.map(account => renderAccount(account, 'credit'))}
+                    {creditAccounts.map(account => renderAccount(account))}
                   </div>
                 )}
               </div>
             )}
-
-            <div className="summary-card bills">
-              <h3>Unpaid Bills</h3>
-              <div className="amount">{formatCurrency(unpaidBills)}</div>
-            </div>
           </div>
 
           <div className="actions">
@@ -727,7 +618,7 @@ function Dashboard() {
       )}
 
       {activeTab === 'bills' && (
-        <Bills onBillsChange={() => { fetchUnpaidBills(); bumpSummary(); }} />
+        <Bills onBillsChange={bumpSummary} />
       )}
 
       {activeTab === 'budget' && (

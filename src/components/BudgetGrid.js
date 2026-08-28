@@ -16,8 +16,14 @@ function BudgetGrid() {
   const [dragOverCategory, setDragOverCategory] = useState(null);
   const [zoom, setZoom] = useState(100); // percent
 
+  const [categoryColWidth, setCategoryColWidth] = useState(() => {
+    const saved = window.localStorage.getItem('budgetCategoryColWidth');
+    return saved ? parseInt(saved) : 150;
+  });
+  const resizingRef = React.useRef(null);
+  const rowRefs = React.useRef({});
+
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const monthsFull = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const years = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2];
 
   useEffect(() => {
@@ -82,6 +88,19 @@ function BudgetGrid() {
     }
   };
 
+  const handleDueDayChange = async (category, value) => {
+    const dueDay = parseInt(value);
+    if (!dueDay || dueDay < 1 || dueDay > 31) return;
+
+    try {
+      await db.updateBudgetDueDay(selectedYear, category, dueDay);
+      fetchBudget();
+    } catch (error) {
+      console.error('Error updating due day:', error);
+      alert('Failed to update due day');
+    }
+  };
+
   const startEdit = (category, month) => {
     const categoryData = categories.find(c => c.category === category);
     const currentValue = categoryData?.amounts?.[month] || 0;
@@ -126,53 +145,40 @@ function BudgetGrid() {
     }
   };
 
-  // Create a real bill (in the Bills tab) from this category's amount for the CURRENT real-world month
-  const handleCreateBill = async (category) => {
-    const categoryData = categories.find(c => c.category === category);
-
-    const now = new Date();
-    const realMonth = now.getMonth() + 1;
-    const realYear = now.getFullYear();
-    const amount = categoryData?.amounts?.[realMonth] || 0;
-
-    if (selectedYear !== realYear) {
-      const confirmed = window.confirm(
-        `This will create a bill for ${monthsFull[realMonth - 1]} ${realYear} (the current month) using the ${category} amount from that month's column ($${amount}). Continue?`
-      );
-      if (!confirmed) return;
-    }
-
-    const dueDayInput = window.prompt(`What day of the month is "${category}" due?`, '1');
-    if (dueDayInput === null) return; // cancelled
-
-    const dueDay = parseInt(dueDayInput);
-    if (!dueDay || dueDay < 1 || dueDay > 31) {
-      alert('Please enter a valid day (1-31)');
-      return;
-    }
+  // Copy every category from the prior year into this one. Categories that
+  // already exist here (by name) are skipped, never overwritten.
+  const handleCopyFromPriorYear = async () => {
+    const sourceYear = selectedYear - 1;
 
     try {
-      await db.addBill({
-        name: category,
-        amount: amount,
-        due_day: dueDay,
-        month: realMonth,
-        year: realYear,
-        is_paid: false
-      });
-      alert(`Bill created for "${category}"! Go to the Bills tab to view or edit it.`);
+      const sourceData = await db.getBudgetForYear(sourceYear);
+      if (sourceData.length === 0) {
+        alert(`${sourceYear} has no budget categories to copy.`);
+        return;
+      }
+
+      let confirmMsg = `Copy ${sourceData.length} categor${sourceData.length === 1 ? 'y' : 'ies'} from ${sourceYear} into ${selectedYear}?`;
+      if (categories.length > 0) {
+        confirmMsg = `${selectedYear} already has ${categories.length} budget categor${categories.length === 1 ? 'y' : 'ies'}. Any names that already exist will be skipped (not overwritten) — only new categories from ${sourceYear} will be added. Continue?`;
+      }
+
+      if (!window.confirm(confirmMsg)) return;
+
+      const result = await db.copyBudgetYear(sourceYear, selectedYear);
+      fetchBudget();
+      alert(
+        `Copied ${result.copied} categor${result.copied === 1 ? 'y' : 'ies'} from ${sourceYear}.` +
+        (result.skipped > 0 ? ` Skipped ${result.skipped} that already existed in ${selectedYear}.` : '')
+      );
     } catch (error) {
-      console.error('Error creating bill:', error);
-      alert('Failed to create bill');
+      console.error('Error copying budget year:', error);
+      alert('Failed to copy budget year');
     }
   };
 
   // === Row reordering ===
-  // Native HTML5 drag-and-drop (dragstart/dragover/drop) does NOT fire from
-  // touch input on iOS Safari — that's why dragging never worked on the phone.
-  // Pointer Events (pointerdown/pointermove/pointerup) work for both touch and
-  // mouse, so reordering is implemented with those instead.
-  const rowRefs = React.useRef({});
+  // Native HTML5 drag-and-drop doesn't fire from touch input on iOS Safari,
+  // so reordering uses Pointer Events (works for both touch and mouse).
 
   const handlePointerDown = (e, category) => {
     e.preventDefault();
@@ -225,7 +231,6 @@ function BudgetGrid() {
 
     const orders = reordered.map((cat, idx) => ({ category: cat.category, order: idx }));
 
-    // Optimistic UI update
     setCategories(reordered.map((cat, idx) => ({ ...cat, display_order: idx })));
 
     try {
@@ -234,6 +239,31 @@ function BudgetGrid() {
       console.error('Error reordering categories:', error);
       fetchBudget();
     }
+  };
+
+  // === Category column resize (drag the handle on the right edge) ===
+
+  const handleResizeStart = (e) => {
+    e.preventDefault();
+    resizingRef.current = { startX: e.clientX, startWidth: categoryColWidth };
+    try {
+      e.target.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // ignore
+    }
+  };
+
+  const handleResizeMove = (e) => {
+    if (!resizingRef.current) return;
+    const delta = e.clientX - resizingRef.current.startX;
+    const newWidth = Math.min(320, Math.max(80, resizingRef.current.startWidth + delta));
+    setCategoryColWidth(newWidth);
+  };
+
+  const handleResizeEnd = () => {
+    if (!resizingRef.current) return;
+    resizingRef.current = null;
+    window.localStorage.setItem('budgetCategoryColWidth', categoryColWidth.toString());
   };
 
   const exportToCSV = () => {
@@ -296,11 +326,6 @@ function BudgetGrid() {
 
   const sortedCategories = [...categories].sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
 
-  // Zoom is done with real CSS sizing (font-size/padding/column width via CSS
-  // variables), NOT transform or the `zoom` property — both of those break
-  // position:sticky's offset math in Safari, which is what caused the category
-  // column to drift/slide off while scrolling. This way the sticky columns are
-  // genuinely frozen at every zoom step, like Excel.
   const zoomSteps = [100, 90, 80, 70, 60, 50];
   const zoomIndex = zoomSteps.indexOf(zoom);
   const zoomIn = () => setZoom(zoomSteps[Math.max(0, zoomIndex - 1)]);
@@ -334,6 +359,9 @@ function BudgetGrid() {
         </div>
 
         <div className="budget-actions">
+          <button onClick={handleCopyFromPriorYear} className="copy-year-btn">
+            📋 Copy {selectedYear - 1} →
+          </button>
           <button onClick={() => setShowAddCategory(!showAddCategory)} className="add-category-btn">
             {showAddCategory ? '✕ Cancel' : '+ Add Category'}
           </button>
@@ -359,22 +387,32 @@ function BudgetGrid() {
         </div>
       )}
 
-      {/* Zoom shrinks real font-size/padding/column-width via CSS variables —
-          no transform or `zoom`, so the frozen columns stay genuinely frozen. */}
       <div
         className="grid-wrapper"
         style={{
           '--cell-font-size': zoomVars.fontSize,
           '--cell-padding': zoomVars.padding,
           '--month-col-width': zoomVars.monthWidth,
+          '--category-col-width': categoryColWidth + 'px',
         }}
       >
         <table className="budget-grid">
           <thead>
             <tr>
               <th className="drag-header sticky-col"></th>
-              <th className="category-header sticky-col">Category</th>
+              <th className="category-header sticky-col">
+                Category
+                <span
+                  className="col-resize-handle"
+                  onPointerDown={handleResizeStart}
+                  onPointerMove={handleResizeMove}
+                  onPointerUp={handleResizeEnd}
+                  onPointerCancel={handleResizeEnd}
+                  title="Drag to resize"
+                />
+              </th>
               <th className="recurring-header">Recurring</th>
+              <th className="due-day-header">Due Day</th>
               {months.map((month, idx) => (
                 <th
                   key={month}
@@ -390,7 +428,7 @@ function BudgetGrid() {
           <tbody>
             {sortedCategories.length === 0 ? (
               <tr>
-                <td colSpan={18} className="empty-state">
+                <td colSpan={19} className="empty-state">
                   No categories yet. Click "+ Add Category" to get started.
                 </td>
               </tr>
@@ -424,6 +462,18 @@ function BudgetGrid() {
                         checked={!!cat.is_recurring}
                         onChange={() => handleToggleRecurring(cat.category)}
                         title="Auto-create this bill on the 1st of each month"
+                      />
+                    </td>
+                    <td className="due-day-cell">
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        defaultValue={cat.due_day || 1}
+                        key={`${cat.category}-${cat.due_day}`}
+                        onBlur={(e) => handleDueDayChange(cat.category, e.target.value)}
+                        className="due-day-input"
+                        title="Day of month this bill is due when auto-created"
                       />
                     </td>
                     {months.map((_, idx) => {
@@ -460,13 +510,6 @@ function BudgetGrid() {
                     <td className="total-cell">{formatCurrency(getCategoryTotal(cat.category))}</td>
                     <td className="actions-cell">
                       <button
-                        onClick={() => handleCreateBill(cat.category)}
-                        className="create-bill-btn"
-                        title="Create Bill from this category"
-                      >
-                        📝
-                      </button>
-                      <button
                         onClick={() => handleDeleteCategory(cat.category)}
                         className="delete-category-btn"
                         title="Delete Category"
@@ -480,6 +523,7 @@ function BudgetGrid() {
                   <td className="drag-cell sticky-col"></td>
                   <td className="category-cell sticky-col"><strong>TOTAL</strong></td>
                   <td className="recurring-cell"></td>
+                  <td className="due-day-cell"></td>
                   {months.map((_, idx) => {
                     const month = idx + 1;
                     const isCurrentMonth = selectedYear === currentYear && month === currentMonth;
@@ -500,6 +544,9 @@ function BudgetGrid() {
         </table>
       </div>
 
+      <div className="budget-info">
+        <p>🔁 Check "Recurring" to auto-create this bill on the 1st of each month using that month's amount and due day.</p>
+      </div>
     </div>
   );
 }

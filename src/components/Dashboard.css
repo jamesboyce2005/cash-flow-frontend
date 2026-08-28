@@ -411,19 +411,6 @@
   border-left: 4px solid #10b981;
 }
 
-.drag-handle {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  color: #ccc;
-  cursor: grab;
-  font-size: 18px;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
 .account-header {
   display: flex;
   justify-content: space-between;

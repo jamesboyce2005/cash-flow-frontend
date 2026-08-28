@@ -257,12 +257,15 @@ class LocalDB {
   }
 
   // Auto-create bills from any budget category marked "recurring", using that
-  // category's amount for the current real-world month. Runs once per month
-  // (tracked via the meta store) no matter how many times the app is opened.
+  // category's amount and due day for the current real-world month. Runs once
+  // per month (tracked via the meta store) no matter how many times the app
+  // is opened. Bill names are stamped with the month (e.g. "Electric - Sep 2026")
+  // so multiple unpaid months of the same bill stay distinguishable in the list.
   async autoGenerateBills() {
     const now = new Date();
     const month = now.getMonth() + 1;
     const year = now.getFullYear();
+    const monthAbbrev = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][month - 1];
 
     const last = await this.getMeta('lastAutoGenerate');
     if (last && last.month === month && last.year === year) {
@@ -277,12 +280,13 @@ class LocalDB {
 
     let count = 0;
     for (const cat of recurring) {
-      if (existingNames.has(cat.category)) continue; // don't duplicate if it already exists
+      const billName = `${cat.category} - ${monthAbbrev} ${year}`;
+      if (existingNames.has(billName)) continue; // don't duplicate if it already exists
       const amount = (cat.amounts && cat.amounts[month]) || 0;
       await this.addBill({
-        name: cat.category,
+        name: billName,
         amount,
-        due_day: 1,
+        due_day: cat.due_day || 1,
         month,
         year,
         is_paid: false
@@ -332,6 +336,7 @@ class LocalDB {
           category,
           amounts,
           is_recurring: false,
+          due_day: 1,
           display_order: maxOrder + 1
         };
 
@@ -340,6 +345,81 @@ class LocalDB {
         addRequest.onerror = () => reject(addRequest.error);
       };
       getAllRequest.onerror = () => reject(getAllRequest.error);
+    });
+  }
+
+  // Used internally by copyBudgetYear to add a category with existing data
+  // (amounts, recurring flag, due day) rather than a blank template.
+  async _addBudgetCategoryWithData(year, category, amounts, is_recurring, due_day) {
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const getAllRequest = store.getAll();
+
+    return new Promise((resolve, reject) => {
+      getAllRequest.onsuccess = () => {
+        const all = getAllRequest.result || [];
+        const sameYear = all.filter(b => b.year === year);
+        const maxOrder = sameYear.reduce((max, b) => Math.max(max, b.display_order || 0), -1);
+
+        const newBudget = {
+          year,
+          category,
+          amounts: { ...amounts },
+          is_recurring: !!is_recurring,
+          due_day: due_day || 1,
+          display_order: maxOrder + 1
+        };
+
+        const addRequest = store.add(newBudget);
+        addRequest.onsuccess = () => resolve({ ...newBudget, id: addRequest.result });
+        addRequest.onerror = () => reject(addRequest.error);
+      };
+      getAllRequest.onerror = () => reject(getAllRequest.error);
+    });
+  }
+
+  // Copies every category from one year into another. Categories that already
+  // exist (by name) in the target year are skipped, never overwritten -
+  // the caller shows a warning first when the target year already has data.
+  async copyBudgetYear(fromYear, toYear) {
+    const source = await this.getBudgetForYear(fromYear);
+    const existingTarget = await this.getBudgetForYear(toYear);
+    const existingNames = new Set(existingTarget.map(c => c.category));
+
+    let copied = 0;
+    let skipped = 0;
+
+    for (const cat of source) {
+      if (existingNames.has(cat.category)) {
+        skipped++;
+        continue;
+      }
+      await this._addBudgetCategoryWithData(toYear, cat.category, cat.amounts, cat.is_recurring, cat.due_day);
+      copied++;
+    }
+
+    return { copied, skipped, existingCount: existingTarget.length };
+  }
+
+  async updateBudgetDueDay(year, category, due_day) {
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const index = store.index('year_category');
+    const getRequest = index.get([year, category]);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const existing = getRequest.result;
+        if (!existing) {
+          reject(new Error('Budget category not found'));
+          return;
+        }
+        const updated = { ...existing, due_day: parseInt(due_day) || 1 };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
     });
   }
 

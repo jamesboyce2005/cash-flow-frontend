@@ -232,6 +232,29 @@ class LocalDB {
     });
   }
 
+  // Toggles a bill's "scheduled" flag - for bills that are auto-scheduled
+  // (autopay queued) but haven't cleared yet, distinct from paid/unpaid.
+  async toggleBillScheduled(id) {
+    const transaction = this.db.transaction(['bills'], 'readwrite');
+    const store = transaction.objectStore('bills');
+    const getRequest = store.get(id);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const bill = getRequest.result;
+        if (!bill) {
+          reject(new Error('Bill not found'));
+          return;
+        }
+        const updated = { ...bill, is_scheduled: !bill.is_scheduled };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+  }
+
   // === META (small settings like "last auto-generate month") ===
 
   async getMeta(key) {
@@ -257,10 +280,11 @@ class LocalDB {
   }
 
   // Auto-create bills from any budget category marked "recurring", using that
-  // category's amount and due day for the current real-world month. Runs once
-  // per month (tracked via the meta store) no matter how many times the app
-  // is opened. Bill names are stamped with the month (e.g. "Electric - Sep 2026")
-  // so multiple unpaid months of the same bill stay distinguishable in the list.
+  // category's amount and due day for the current real-world month. Skips any
+  // category whose amount for this month is $0 — nothing to bill for yet.
+  // Runs once per month (tracked via the meta store) no matter how many times
+  // the app is opened. Bill names are stamped with the month (e.g. "Electric -
+  // Sep 2026") so multiple unpaid months of the same bill stay distinguishable.
   async autoGenerateBills() {
     const now = new Date();
     const month = now.getMonth() + 1;
@@ -280,16 +304,20 @@ class LocalDB {
 
     let count = 0;
     for (const cat of recurring) {
+      const amount = (cat.amounts && cat.amounts[month]) || 0;
+      if (amount === 0) continue; // don't auto-populate a bill with no budgeted amount
+
       const billName = `${cat.category} - ${monthAbbrev} ${year}`;
       if (existingNames.has(billName)) continue; // don't duplicate if it already exists
-      const amount = (cat.amounts && cat.amounts[month]) || 0;
+
       await this.addBill({
         name: billName,
         amount,
         due_day: cat.due_day || 1,
         month,
         year,
-        is_paid: false
+        is_paid: false,
+        is_scheduled: false
       });
       count++;
     }
@@ -415,6 +443,36 @@ class LocalDB {
           return;
         }
         const updated = { ...existing, due_day: parseInt(due_day) || 1 };
+        const putRequest = store.put(updated);
+        putRequest.onsuccess = () => resolve(updated);
+        putRequest.onerror = () => reject(putRequest.error);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+  }
+
+  // Combined update used by the per-category Setup panel: recurring flag,
+  // due day, a reference "typical amount", and free-text notes, saved together.
+  async updateBudgetSetup(year, category, { is_recurring, due_day, default_amount, notes }) {
+    const transaction = this.db.transaction(['budget'], 'readwrite');
+    const store = transaction.objectStore('budget');
+    const index = store.index('year_category');
+    const getRequest = index.get([year, category]);
+
+    return new Promise((resolve, reject) => {
+      getRequest.onsuccess = () => {
+        const existing = getRequest.result;
+        if (!existing) {
+          reject(new Error('Budget category not found'));
+          return;
+        }
+        const updated = {
+          ...existing,
+          is_recurring: !!is_recurring,
+          due_day: parseInt(due_day) || 1,
+          default_amount: parseFloat(default_amount) || 0,
+          notes: notes || ''
+        };
         const putRequest = store.put(updated);
         putRequest.onsuccess = () => resolve(updated);
         putRequest.onerror = () => reject(putRequest.error);

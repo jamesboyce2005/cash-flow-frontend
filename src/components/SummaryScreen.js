@@ -154,7 +154,12 @@ function SummaryScreen({ refreshKey }) {
           emptyLabel="No unpaid bills"
           renderItem={(b) => (
             <div key={b.id} className="detail-item">
-              <span>{b.name}</span>
+              <span>
+                {b.is_scheduled && (
+                  <span className="scheduled-icon" title="Scheduled — autopay queued, not yet cleared">🕓 </span>
+                )}
+                {b.name}
+              </span>
               <span>{formatCurrency(b.amount)}</span>
             </div>
           )}

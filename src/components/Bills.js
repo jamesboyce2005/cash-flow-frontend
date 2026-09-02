@@ -4,6 +4,8 @@ import './Bills.css';
 
 function Bills({ onBillsChange }) {
   const [bills, setBills] = useState([]);
+  const [paidHistory, setPaidHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newBill, setNewBill] = useState({
     name: '',
@@ -20,13 +22,17 @@ function Bills({ onBillsChange }) {
   const currentYear = now.getFullYear();
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
+  // How many months of paid history to show by default
+  const HISTORY_MONTHS_BACK = 3;
+
   useEffect(() => {
     fetchBills();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Show this month's bills PLUS any still-unpaid bills from earlier months
-  // (so something that straddles months doesn't just vanish)
+  // (so something that straddles months doesn't just vanish). Paid bills from
+  // past months move to the separate Paid History section instead.
   const fetchBills = async () => {
     try {
       const allBills = await db.getAllBills();
@@ -39,13 +45,27 @@ function Bills({ onBillsChange }) {
         (!b.is_paid && isBeforeCurrentMonth(b))
       );
 
-      // Unpaid first, then sort by due day
+      // Unpaid first, then scheduled, then paid; sorted by due day within each group
       relevant.sort((a, b) => {
-        if (a.is_paid !== b.is_paid) return a.is_paid ? 1 : -1;
+        const rank = (bill) => (bill.is_paid ? 2 : bill.is_scheduled ? 1 : 0);
+        const rankDiff = rank(a) - rank(b);
+        if (rankDiff !== 0) return rankDiff;
         return a.due_day - b.due_day;
       });
 
       setBills(relevant);
+
+      // Paid history: paid bills from strictly past months, most recent first
+      const cutoff = new Date(currentYear, currentMonth - 1 - HISTORY_MONTHS_BACK, 1);
+      const history = allBills
+        .filter(b => b.is_paid && isBeforeCurrentMonth(b))
+        .filter(b => new Date(b.year, b.month - 1, 1) >= cutoff)
+        .sort((a, b) => {
+          if (a.year !== b.year) return b.year - a.year;
+          if (a.month !== b.month) return b.month - a.month;
+          return a.due_day - b.due_day;
+        });
+      setPaidHistory(history);
     } catch (error) {
       console.error('Error fetching bills:', error);
     }
@@ -74,7 +94,8 @@ function Bills({ onBillsChange }) {
         due_day: parseInt(newBill.due_day),
         month: currentMonth,
         year: currentYear,
-        is_paid: false
+        is_paid: false,
+        is_scheduled: false
       });
 
       setNewBill({ name: '', amount: '', due_day: '' });
@@ -94,6 +115,27 @@ function Bills({ onBillsChange }) {
       refreshAll();
     } catch (error) {
       console.error('Error toggling bill status:', error);
+    }
+  };
+
+  const toggleScheduled = async (billId) => {
+    try {
+      await db.toggleBillScheduled(billId);
+      refreshAll();
+    } catch (error) {
+      console.error('Error toggling scheduled status:', error);
+    }
+  };
+
+  const unmarkPaid = async (billId, billName) => {
+    if (!window.confirm(`Mark "${billName}" as unpaid again?`)) return;
+
+    try {
+      await db.updateBill(billId, { is_paid: false });
+      refreshAll();
+    } catch (error) {
+      console.error('Error unmarking bill as paid:', error);
+      alert('Failed to update bill');
     }
   };
 
@@ -235,7 +277,10 @@ function Bills({ onBillsChange }) {
           </div>
         ) : (
           bills.map((bill) => (
-            <div key={bill.id} className={`bill-card ${bill.is_paid ? 'paid' : 'unpaid'}`}>
+            <div
+              key={bill.id}
+              className={`bill-card ${bill.is_paid ? 'paid' : bill.is_scheduled ? 'scheduled' : 'unpaid'}`}
+            >
               {editingBillId === bill.id ? (
                 <div className="bill-edit-form">
                   <div className="form-group">
@@ -275,6 +320,9 @@ function Bills({ onBillsChange }) {
                 <>
                   <div className="bill-info">
                     <h3>
+                      {bill.is_scheduled && !bill.is_paid && (
+                        <span className="scheduled-icon" title="Scheduled — autopay queued, not yet cleared">🕓</span>
+                      )}
                       {bill.name}
                       {isCarriedForward(bill) && (
                         <span className="carried-badge" title={`From ${monthNames[bill.month - 1]} ${bill.year}`}>
@@ -288,6 +336,15 @@ function Bills({ onBillsChange }) {
                     {formatCurrency(bill.amount)}
                   </div>
                   <div className="bill-actions">
+                    {!bill.is_paid && (
+                      <button
+                        onClick={() => toggleScheduled(bill.id)}
+                        className={`status-btn scheduled-btn ${bill.is_scheduled ? 'active' : ''}`}
+                        title="Toggle scheduled — autopay queued but not yet cleared"
+                      >
+                        🕓 {bill.is_scheduled ? 'Scheduled' : 'Schedule'}
+                      </button>
+                    )}
                     <button
                       onClick={() => togglePaid(bill.id, bill.is_paid)}
                       className={`status-btn ${bill.is_paid ? 'paid' : 'unpaid'}`}
@@ -313,6 +370,36 @@ function Bills({ onBillsChange }) {
               )}
             </div>
           ))
+        )}
+      </div>
+
+      <div className="paid-history-section">
+        <button className="paid-history-toggle" onClick={() => setShowHistory(!showHistory)}>
+          {showHistory ? '▼' : '▶'} Paid History ({paidHistory.length})
+        </button>
+        {showHistory && (
+          <div className="paid-history-list">
+            {paidHistory.length === 0 ? (
+              <p className="detail-empty">No paid bills in the last {HISTORY_MONTHS_BACK} months.</p>
+            ) : (
+              paidHistory.map((bill) => (
+                <div key={bill.id} className="paid-history-item">
+                  <div className="paid-history-info">
+                    <span className="paid-history-name">{bill.name}</span>
+                    <span className="paid-history-month">{monthNames[bill.month - 1]} {bill.year}</span>
+                  </div>
+                  <span className="paid-history-amount">{formatCurrency(bill.amount)}</span>
+                  <button
+                    onClick={() => unmarkPaid(bill.id, bill.name)}
+                    className="unmark-paid-btn"
+                    title="Undo — mark this bill unpaid again"
+                  >
+                    Unmark Paid
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
         )}
       </div>
     </div>

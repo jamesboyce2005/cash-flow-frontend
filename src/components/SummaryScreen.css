@@ -112,6 +112,10 @@
   padding: 4px 0;
 }
 
+.detail-item .scheduled-icon {
+  font-size: 12px;
+}
+
 .detail-empty {
   font-size: 13px;
   color: #999;

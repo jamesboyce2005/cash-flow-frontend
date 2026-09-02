@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
+import BudgetCategorySetup from './BudgetCategorySetup';
 import './BudgetGrid.css';
 
 function BudgetGrid() {
@@ -14,7 +15,7 @@ function BudgetGrid() {
   const [editValue, setEditValue] = useState('');
   const [draggedCategory, setDraggedCategory] = useState(null);
   const [dragOverCategory, setDragOverCategory] = useState(null);
-  const [zoom, setZoom] = useState(100); // percent
+  const [zoom, setZoom] = useState(70); // percent — smaller default so the grid is usable without manually zooming out first
 
   const [categoryColWidth, setCategoryColWidth] = useState(() => {
     const saved = window.localStorage.getItem('budgetCategoryColWidth');
@@ -78,28 +79,8 @@ function BudgetGrid() {
     }
   };
 
-  const handleToggleRecurring = async (category) => {
-    try {
-      await db.toggleBudgetRecurring(selectedYear, category);
-      fetchBudget();
-    } catch (error) {
-      console.error('Error toggling recurring:', error);
-      alert('Failed to update recurring status');
-    }
-  };
-
-  const handleDueDayChange = async (category, value) => {
-    const dueDay = parseInt(value);
-    if (!dueDay || dueDay < 1 || dueDay > 31) return;
-
-    try {
-      await db.updateBudgetDueDay(selectedYear, category, dueDay);
-      fetchBudget();
-    } catch (error) {
-      console.error('Error updating due day:', error);
-      alert('Failed to update due day');
-    }
-  };
+  // Which category's Setup panel (recurring, due day, typical amount, notes) is open
+  const [setupCategory, setSetupCategory] = useState(null);
 
   const startEdit = (category, month) => {
     const categoryData = categories.find(c => c.category === category);
@@ -411,8 +392,6 @@ function BudgetGrid() {
                   title="Drag to resize"
                 />
               </th>
-              <th className="recurring-header">Recurring</th>
-              <th className="due-day-header">Due Day</th>
               {months.map((month, idx) => (
                 <th
                   key={month}
@@ -428,7 +407,7 @@ function BudgetGrid() {
           <tbody>
             {sortedCategories.length === 0 ? (
               <tr>
-                <td colSpan={19} className="empty-state">
+                <td colSpan={16} className="empty-state">
                   No categories yet. Click "+ Add Category" to get started.
                 </td>
               </tr>
@@ -455,26 +434,11 @@ function BudgetGrid() {
                         ⋮⋮
                       </span>
                     </td>
-                    <td className="category-cell sticky-col">{cat.category}</td>
-                    <td className="recurring-cell">
-                      <input
-                        type="checkbox"
-                        checked={!!cat.is_recurring}
-                        onChange={() => handleToggleRecurring(cat.category)}
-                        title="Auto-create this bill on the 1st of each month"
-                      />
-                    </td>
-                    <td className="due-day-cell">
-                      <input
-                        type="number"
-                        min="1"
-                        max="31"
-                        defaultValue={cat.due_day || 1}
-                        key={`${cat.category}-${cat.due_day}`}
-                        onBlur={(e) => handleDueDayChange(cat.category, e.target.value)}
-                        className="due-day-input"
-                        title="Day of month this bill is due when auto-created"
-                      />
+                    <td className="category-cell sticky-col">
+                      {cat.category}
+                      {cat.is_recurring && (
+                        <span className="recurring-indicator" title="Recurring — auto-creates a bill each month">🔁</span>
+                      )}
                     </td>
                     {months.map((_, idx) => {
                       const month = idx + 1;
@@ -510,6 +474,13 @@ function BudgetGrid() {
                     <td className="total-cell">{formatCurrency(getCategoryTotal(cat.category))}</td>
                     <td className="actions-cell">
                       <button
+                        onClick={() => setSetupCategory(cat.category)}
+                        className="setup-category-btn"
+                        title="Setup — recurring, due day, typical amount, notes"
+                      >
+                        ⚙️
+                      </button>
+                      <button
                         onClick={() => handleDeleteCategory(cat.category)}
                         className="delete-category-btn"
                         title="Delete Category"
@@ -522,8 +493,6 @@ function BudgetGrid() {
                 <tr className="totals-row">
                   <td className="drag-cell sticky-col"></td>
                   <td className="category-cell sticky-col"><strong>TOTAL</strong></td>
-                  <td className="recurring-cell"></td>
-                  <td className="due-day-cell"></td>
                   {months.map((_, idx) => {
                     const month = idx + 1;
                     const isCurrentMonth = selectedYear === currentYear && month === currentMonth;
@@ -544,8 +513,18 @@ function BudgetGrid() {
         </table>
       </div>
 
+      {setupCategory && (
+        <BudgetCategorySetup
+          year={selectedYear}
+          category={setupCategory}
+          initialData={categories.find(c => c.category === setupCategory) || {}}
+          onClose={() => setSetupCategory(null)}
+          onSaved={fetchBudget}
+        />
+      )}
+
       <div className="budget-info">
-        <p>🔁 Check "Recurring" to auto-create this bill on the 1st of each month using that month's amount and due day.</p>
+        <p>🔁 Categories marked Recurring auto-create a bill on the 1st of each month (skipped if that month's amount is $0). Manage recurring, due day, and notes via the ⚙️ Setup button.</p>
       </div>
     </div>
   );

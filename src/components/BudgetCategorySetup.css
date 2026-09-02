@@ -1,0 +1,155 @@
+.setup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.setup-modal {
+  background: white;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.setup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.setup-header h3 {
+  font-size: 16px;
+  color: #333;
+}
+
+.setup-close {
+  background: #f5f5f5;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.setup-close:hover {
+  background: #ef4444;
+  color: white;
+}
+
+.setup-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.setup-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+}
+
+.setup-checkbox-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+}
+
+.setup-hint {
+  font-weight: 400;
+  color: #999;
+  font-size: 12px;
+}
+
+.setup-field input,
+.setup-field textarea {
+  padding: 10px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.setup-field input:focus,
+.setup-field textarea:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.setup-actions {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.setup-save-btn,
+.setup-cancel-btn {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.setup-save-btn {
+  background: #667eea;
+  color: white;
+}
+
+.setup-save-btn:hover {
+  background: #5568d3;
+}
+
+.setup-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.setup-cancel-btn {
+  background: #f5f5f5;
+  color: #666;
+}
+
+.setup-cancel-btn:hover {
+  background: #e5e5e5;
+}

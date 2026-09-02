@@ -204,7 +204,10 @@
 /* Frozen columns/corner, Excel-style. The two header cells that are also
    frozen columns (drag handle + category) get BOTH top and left sticky set
    together in one rule so the corner never drops out while scrolling in
-   either direction — this is what was breaking before. */
+   either direction — this is what was breaking before. `transform:
+   translateZ(0)` forces these cells onto their own GPU-composited layer,
+   which fixes the iOS Safari glitch where scrolled content briefly shows
+   through/behind the frozen column during a scroll gesture. */
 .drag-header.sticky-col,
 .category-header.sticky-col {
   position: sticky;
@@ -212,6 +215,9 @@
   left: 0;
   z-index: 25;
   background: #f5f5f5;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
 }
 
 .category-header.sticky-col {
@@ -225,6 +231,9 @@
   position: sticky;
   left: 0;
   z-index: 6;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
 }
 
 .category-cell.sticky-col {
@@ -293,36 +302,10 @@ td.drag-cell {
   background: rgba(102, 126, 234, 0.5);
 }
 
-.recurring-header,
-.recurring-cell {
-  min-width: 90px;
-  background: #fafafa;
-}
-
-.recurring-cell input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-}
-
-.due-day-header,
-.due-day-cell {
-  min-width: 70px;
-  background: #fafafa;
-}
-
-.due-day-input {
-  width: 48px;
-  padding: 4px;
-  border: 1px solid #e0e0e0;
-  border-radius: 4px;
-  text-align: center;
-  font-size: inherit;
-}
-
-.due-day-input:focus {
-  outline: none;
-  border-color: #667eea;
+.recurring-indicator {
+  font-size: 11px;
+  margin-left: 6px;
+  opacity: 0.8;
 }
 
 .month-header {
@@ -416,7 +399,7 @@ td.drag-cell {
   white-space: nowrap;
 }
 
-.create-bill-btn,
+.setup-category-btn,
 .delete-category-btn {
   background: transparent;
   border: none;
@@ -427,7 +410,7 @@ td.drag-cell {
   transition: background-color 0.2s;
 }
 
-.create-bill-btn:hover {
+.setup-category-btn:hover {
   background: #e0f2fe;
 }
 
